@@ -1,0 +1,13 @@
+{
+  "name": "career-copilot",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter @career-copilot/app dev",
+    "build": "pnpm --filter @career-copilot/app build",
+    "preview": "pnpm --filter @career-copilot/app preview",
+    "typecheck": "pnpm -r exec tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5"
+  }
+}
