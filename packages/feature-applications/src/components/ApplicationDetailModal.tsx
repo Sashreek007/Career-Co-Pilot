@@ -4,10 +4,19 @@ import { X } from 'lucide-react';
 
 interface ApplicationDetailModalProps {
   draft: ApplicationDraft;
+  onEdit: (draftId: string) => void;
+  onSubmitApplication: (draftId: string) => void;
+  onMarkInterview: (draftId: string) => void;
   onClose: () => void;
 }
 
-export function ApplicationDetailModal({ draft, onClose }: ApplicationDetailModalProps) {
+export function ApplicationDetailModal({
+  draft,
+  onEdit,
+  onSubmitApplication,
+  onMarkInterview,
+  onClose,
+}: ApplicationDetailModalProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
@@ -84,6 +93,31 @@ export function ApplicationDetailModal({ draft, onClose }: ApplicationDetailModa
           <div className="text-xs text-zinc-500 space-y-1 pt-2 border-t border-zinc-800">
             <p>Created: {new Date(draft.createdAt).toLocaleDateString()}</p>
             {draft.submittedAt && <p>Submitted: {new Date(draft.submittedAt).toLocaleDateString()}</p>}
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-zinc-800">
+            <button
+              onClick={() => onEdit(draft.id)}
+              className="px-3 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-colors"
+            >
+              Edit
+            </button>
+            {draft.status === 'approved' && (
+              <button
+                onClick={() => onSubmitApplication(draft.id)}
+                className="px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors"
+              >
+                Submit Application
+              </button>
+            )}
+            {draft.status === 'submitted' && (
+              <button
+                onClick={() => onMarkInterview(draft.id)}
+                className="px-3 py-1.5 rounded-md bg-violet-600 hover:bg-violet-500 text-white text-xs font-medium transition-colors"
+              >
+                Mark as Interview
+              </button>
+            )}
           </div>
         </div>
       </div>

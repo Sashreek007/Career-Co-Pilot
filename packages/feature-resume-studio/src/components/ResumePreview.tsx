@@ -5,9 +5,33 @@ interface ResumePreviewProps {
 }
 
 export function ResumePreview({ version }: ResumePreviewProps) {
+  const scoreBarColor =
+    version.strengthScore >= 80
+      ? 'bg-green-500'
+      : version.strengthScore >= 65
+        ? 'bg-amber-500'
+        : 'bg-zinc-500';
+
   return (
     <div className="p-6">
       <div className="max-w-2xl mx-auto bg-zinc-900 border border-zinc-800 rounded-xl p-8 space-y-6">
+        <div className="space-y-2">
+          <div className="flex items-center justify-between text-xs text-zinc-400">
+            <span>Resume Match</span>
+            <span className="font-medium text-zinc-300">{version.strengthScore}%</span>
+          </div>
+          <div className="h-2 rounded-full bg-zinc-800 overflow-hidden">
+            <div
+              className={`${scoreBarColor} h-full transition-all duration-300`}
+              style={{ width: `${Math.max(0, Math.min(100, version.strengthScore))}%` }}
+            />
+          </div>
+          <div className="flex items-center gap-4 text-xs text-zinc-500">
+            <span>Keyword coverage: {version.keywordCoverage}%</span>
+            <span>Skill alignment: {version.skillAlignment}%</span>
+          </div>
+        </div>
+
         {/* Header */}
         <div className="border-b border-zinc-800 pb-4">
           <h2 className="text-xl font-bold text-zinc-100">Alex Chen</h2>

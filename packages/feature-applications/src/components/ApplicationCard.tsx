@@ -1,4 +1,5 @@
 import { useDraggable } from '@dnd-kit/core';
+import { useRef, useEffect } from 'react';
 import type { ApplicationDraft } from '@career-copilot/core';
 import { MatchBadge, cn } from '@career-copilot/ui';
 import { Building2 } from 'lucide-react';
@@ -12,10 +13,17 @@ export function ApplicationCard({ draft, onClick }: ApplicationCardProps) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: draft.id,
   });
+  const hasDraggedRef = useRef(false);
 
   const style = transform
     ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)` }
     : undefined;
+
+  useEffect(() => {
+    if (transform && (Math.abs(transform.x) > 0 || Math.abs(transform.y) > 0)) {
+      hasDraggedRef.current = true;
+    }
+  }, [transform]);
 
   return (
     <div
@@ -23,13 +31,16 @@ export function ApplicationCard({ draft, onClick }: ApplicationCardProps) {
       style={style}
       {...listeners}
       {...attributes}
+      onPointerDownCapture={() => {
+        hasDraggedRef.current = false;
+      }}
       className={cn(
         'bg-zinc-900 border border-zinc-800 rounded-lg p-3 cursor-grab active:cursor-grabbing select-none',
         isDragging && 'opacity-50 shadow-xl ring-1 ring-blue-500/50'
       )}
       onClick={(e) => {
-        // Only trigger click if not dragging
-        if (!isDragging) onClick();
+        if (!isDragging && !hasDraggedRef.current) onClick();
+        hasDraggedRef.current = false;
         e.stopPropagation();
       }}
     >
