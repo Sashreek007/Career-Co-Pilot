@@ -1,19 +1,16 @@
 import importlib
 import logging
 import sqlite3
-from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
+from app.db.database import get_db
 from app.engines.feedback.cache_refresher import refresh_insights_cache
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=['outcomes'])
-
-
-DB_PATH = Path(__file__).resolve().parents[3] / 'data' / 'career_copilot.db'
 ALLOWED_STATUSES = {'submitted', 'viewed', 'interview', 'offer', 'rejected'}
 
 
@@ -25,10 +22,7 @@ class OutcomeUpdate(BaseModel):
 
 
 def _get_db() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return get_db()
 
 
 async def _refresh_cached_insights() -> None:

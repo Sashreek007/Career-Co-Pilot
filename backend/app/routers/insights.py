@@ -1,23 +1,16 @@
 import json
 import sqlite3
 from datetime import datetime, timedelta
-from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
+from app.db.database import get_db
 from app.engines.feedback.cache_refresher import refresh_insights_cache
 
 router = APIRouter(prefix='/insights', tags=['insights'])
 
-
-DB_PATH = Path(__file__).resolve().parents[3] / 'data' / 'career_copilot.db'
-
-
 def _get_db() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return get_db()
 
 
 def _parse_dt(raw: str | None) -> datetime | None:
