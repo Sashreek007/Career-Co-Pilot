@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .routers import health
+from .routers import insights
+from .routers import outcomes
 
 app = FastAPI(title="Career Co-Pilot API", version="0.1.0")
 
@@ -13,6 +15,8 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+app.include_router(insights.router)
+app.include_router(outcomes.router)
 
 
 @app.get("/")
