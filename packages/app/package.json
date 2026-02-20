@@ -1,0 +1,37 @@
+{
+  "name": "@career-copilot/app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@career-copilot/core": "workspace:*",
+    "@career-copilot/ui": "workspace:*",
+    "@career-copilot/api": "workspace:*",
+    "@career-copilot/feature-profile": "workspace:*",
+    "@career-copilot/feature-jobs": "workspace:*",
+    "@career-copilot/feature-resume-studio": "workspace:*",
+    "@career-copilot/feature-applications": "workspace:*",
+    "@career-copilot/feature-interviews": "workspace:*",
+    "@career-copilot/feature-insights": "workspace:*",
+    "@career-copilot/feature-settings": "workspace:*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.22.3",
+    "zustand": "^4.5.2"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.3",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.11"
+  }
+}

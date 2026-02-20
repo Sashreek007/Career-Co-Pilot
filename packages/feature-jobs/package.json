@@ -1,0 +1,17 @@
+{
+  "name": "@career-copilot/feature-jobs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@career-copilot/core": "workspace:*",
+    "@career-copilot/ui": "workspace:*",
+    "@career-copilot/api": "workspace:*",
+    "react": "^18.3.1",
+    "react-router-dom": "^6.22.3",
+    "zustand": "^4.5.2",
+    "lucide-react": "^0.378.0"
+  }
+}
