@@ -1,0 +1,104 @@
+from pathlib import Path
+
+from .database import get_db
+
+SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS user_profile (
+    id TEXT PRIMARY KEY DEFAULT 'local',
+    name TEXT,
+    email TEXT,
+    phone TEXT,
+    location TEXT,
+    linkedin_url TEXT,
+    github_url TEXT,
+    summary TEXT,
+    skills_json TEXT,
+    experience_json TEXT,
+    projects_json TEXT,
+    certifications_json TEXT,
+    role_interests_json TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    company TEXT NOT NULL,
+    location TEXT,
+    remote INTEGER DEFAULT 0,
+    description TEXT,
+    skills_required_json TEXT,
+    source TEXT,
+    source_url TEXT,
+    match_score REAL DEFAULT 0.0,
+    match_tier TEXT DEFAULT 'low',
+    posted_date TEXT,
+    discovered_at TEXT DEFAULT (datetime('now')),
+    is_archived INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS resume_versions (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    type TEXT NOT NULL,
+    job_id TEXT REFERENCES jobs(id),
+    content_json TEXT,
+    strength_score REAL DEFAULT 0.0,
+    keyword_coverage REAL DEFAULT 0.0,
+    skill_alignment REAL DEFAULT 0.0,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS application_drafts (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL REFERENCES jobs(id),
+    resume_version_id TEXT REFERENCES resume_versions(id),
+    status TEXT DEFAULT 'drafted',
+    form_structure_json TEXT,
+    filled_answers_json TEXT,
+    cover_letter TEXT,
+    screening_answers_json TEXT,
+    response_time_days INTEGER,
+    rejection_type TEXT,
+    notes TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    approved_at TEXT,
+    submitted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS interview_kits (
+    id TEXT PRIMARY KEY,
+    application_id TEXT NOT NULL REFERENCES application_drafts(id),
+    interview_type TEXT,
+    company_profile_json TEXT,
+    question_bank_json TEXT,
+    answer_drafts_json TEXT,
+    mock_scores_json TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS insights_cache (
+    id INTEGER PRIMARY KEY DEFAULT 1,
+    rolling_metrics_json TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS discovery_runs (
+    id TEXT PRIMARY KEY,
+    started_at TEXT,
+    completed_at TEXT,
+    jobs_found INTEGER DEFAULT 0,
+    jobs_new INTEGER DEFAULT 0,
+    source TEXT,
+    status TEXT
+);
+"""
+
+
+def init_db(db_path: str | Path | None = None) -> None:
+    conn = get_db(db_path)
+    try:
+        conn.executescript(SCHEMA_SQL)
+        conn.commit()
+    finally:
+        conn.close()
