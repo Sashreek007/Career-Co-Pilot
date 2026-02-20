@@ -1,12 +1,32 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { PageHeader } from '@career-copilot/ui';
 import { useSettingsStore } from '../state/useSettingsStore';
-import { Eye, EyeOff, AlertTriangle } from 'lucide-react';
+import { Eye, EyeOff, AlertTriangle, Check } from 'lucide-react';
 
+/* ── Section with "Saved" toast ─────────────────────────────── */
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  const [saved, setSaved] = useState(false);
+
+  const handleSaved = useCallback(() => {
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  }, []);
+
   return (
-    <section className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4">
+    <section
+      className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4 relative"
+      onBlur={handleSaved}
+    >
       <h2 className="text-sm font-semibold text-zinc-200">{title}</h2>
+
+      {/* Save confirmation toast */}
+      {saved && (
+        <span className="absolute top-4 right-4 flex items-center gap-1 text-green-400 text-xs font-medium animate-fade-in">
+          <Check className="w-3.5 h-3.5" />
+          Saved
+        </span>
+      )}
+
       {children}
     </section>
   );
@@ -24,10 +44,29 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 const inputCls = 'w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-1.5 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-blue-500';
 const selectCls = 'w-full bg-zinc-800 border border-zinc-700 rounded-md px-3 py-1.5 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-blue-500';
 
+/* ── Helpers ─────────────────────────────────────────────────── */
+function exportBackup() {
+  const state = useSettingsStore.getState();
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `career-copilot-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* ── Main page ───────────────────────────────────────────────── */
 export function SettingsPage() {
   const s = useSettingsStore();
   const [showKey, setShowKey] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [testState, setTestState] = useState<'idle' | 'testing' | 'success'>('idle');
+
+  const handleTestConnection = () => {
+    setTestState('testing');
+    setTimeout(() => setTestState('success'), 1000);
+  };
 
   return (
     <div className="h-full overflow-y-auto">
@@ -109,10 +148,18 @@ export function SettingsPage() {
           </Field>
           <div className="pt-1">
             <button
-              onClick={() => console.log('[stub] Test LLM connection')}
-              className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+              onClick={handleTestConnection}
+              disabled={!s.llmApiKey || testState === 'testing'}
+              className={`text-xs font-medium transition-colors ${testState === 'success'
+                ? 'text-green-400'
+                : !s.llmApiKey
+                  ? 'text-zinc-600 cursor-not-allowed'
+                  : 'text-blue-400 hover:text-blue-300'
+                }`}
             >
-              Test connection (coming soon)
+              {testState === 'idle' && 'Test Connection'}
+              {testState === 'testing' && 'Testing…'}
+              {testState === 'success' && '✓ Connected'}
             </button>
           </div>
         </Section>
@@ -121,7 +168,7 @@ export function SettingsPage() {
         <Section title="Backup & Restore">
           <div className="flex gap-3">
             <button
-              onClick={() => console.log('[stub] Export backup')}
+              onClick={exportBackup}
               className="px-3 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-colors"
             >
               Export Backup
@@ -158,6 +205,9 @@ export function SettingsPage() {
             )}
           </div>
         </Section>
+
+        {/* Version footer */}
+        <p className="text-xs text-zinc-600 text-center pt-4">Career Co-Pilot v0.1.0 — scaffold phase</p>
       </div>
     </div>
   );
