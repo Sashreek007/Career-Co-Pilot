@@ -15,9 +15,12 @@ export function RoleInterestsSection({ interests }: { interests: RoleInterest[] 
             </div>
             <div className="flex flex-wrap gap-1 mt-1.5">
               {ri.domains.map((d) => (
-                <span key={d} className="text-xs px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400">{d}</span>
+                <span key={d} className="text-xs px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400">
+                  {d}
+                </span>
               ))}
             </div>
+            <p className="mt-2 text-xs text-zinc-500">Locations: {ri.locations.join(', ')}</p>
           </div>
         ))}
       </div>
