@@ -17,7 +17,10 @@ export function ExportButtons({ resumeId, onExportJson, onExportPdf }: ExportBut
         Export JSON
       </button>
       <button
-        onClick={() => onExportPdf(resumeId)}
+        onClick={() => {
+          onExportPdf(resumeId);
+          alert('PDF export requires backend connection. JSON export is available now.');
+        }}
         className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-colors"
         title="PDF export requires backend connection"
       >

@@ -36,6 +36,20 @@ export function ApplicationsPage() {
     }
   };
 
+  const handleEdit = (draftId: string) => {
+    console.log(`[stub] Edit application ${draftId}`);
+  };
+
+  const handleSubmitApplication = (draftId: string) => {
+    console.log(`[stub] Submit application ${draftId}`);
+    setSelectedDraft(null);
+  };
+
+  const handleMarkInterview = async (draftId: string) => {
+    await moveDraft(draftId, 'interview');
+    setSelectedDraft(null);
+  };
+
   return (
     <div className="h-full flex flex-col">
       <div className="px-6 pt-6 pb-4">
@@ -68,6 +82,9 @@ export function ApplicationsPage() {
       {selectedDraft && (
         <ApplicationDetailModal
           draft={selectedDraft}
+          onEdit={handleEdit}
+          onSubmitApplication={handleSubmitApplication}
+          onMarkInterview={handleMarkInterview}
           onClose={() => setSelectedDraft(null)}
         />
       )}

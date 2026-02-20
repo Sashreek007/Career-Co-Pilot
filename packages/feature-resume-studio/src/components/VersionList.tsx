@@ -9,8 +9,12 @@ interface VersionListProps {
 }
 
 export function VersionList({ versions, selectedId, onSelect }: VersionListProps) {
-  const base = versions.filter((v) => v.type === 'base');
-  const tailored = versions.filter((v) => v.type === 'tailored');
+  const base = versions
+    .filter((v) => v.type === 'base')
+    .sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt));
+  const tailored = versions
+    .filter((v) => v.type === 'tailored')
+    .sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt));
 
   const renderItem = (v: ResumeVersion) => (
     <button
@@ -35,7 +39,15 @@ export function VersionList({ versions, selectedId, onSelect }: VersionListProps
           <span className={`text-xs font-medium ${v.strengthScore >= 80 ? 'text-green-400' : v.strengthScore >= 65 ? 'text-amber-400' : 'text-zinc-500'}`}>
             {v.strengthScore}% strength
           </span>
+          {v.type === 'tailored' && v.company && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/30">
+              Tailored for {v.company}
+            </span>
+          )}
         </div>
+        <p className="text-xs text-zinc-500 mt-1">
+          Created: {new Date(v.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+        </p>
       </div>
     </button>
   );
