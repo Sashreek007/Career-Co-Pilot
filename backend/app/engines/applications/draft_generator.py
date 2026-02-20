@@ -32,6 +32,12 @@ def _is_essay_prompt(label_lower: str) -> bool:
     return any(token in label_lower for token in ("why", "tell us", "describe"))
 
 
+def _is_experience_years_prompt(label_lower: str) -> bool:
+    has_experience = "experience" in label_lower
+    has_year = "year" in label_lower
+    return has_experience and has_year
+
+
 def generate_draft_answers(
     job: dict[str, Any], user_profile: dict[str, Any], form_fields: list[dict[str, Any]]
 ) -> dict[str, Any]:
@@ -68,7 +74,7 @@ def generate_draft_answers(
             answers[label] = user_profile.get("location") or "[REQUIRES_REVIEW: Location]"
             continue
 
-        if "years of experience" in label_lower:
+        if _is_experience_years_prompt(label_lower):
             skill_years: int | None = None
             for skill in skills:
                 if not isinstance(skill, dict):
