@@ -118,6 +118,6 @@ export const MOCK_APPLICATIONS: ApplicationDraft[] = [
     createdAt: '2026-01-20T10:00:00Z',
     approvedAt: '2026-01-21T09:00:00Z',
     submittedAt: '2026-01-21T09:15:00Z',
-    responseTimedays: 12,
+    responseTimeDays: 12,
   },
 ];
