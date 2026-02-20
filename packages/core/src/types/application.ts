@@ -30,6 +30,6 @@ export interface ApplicationDraft {
   createdAt: string;
   approvedAt?: string;
   submittedAt?: string;
-  responseTimedays?: number;
+  responseTimeDays?: number;
   notes?: string;
 }
