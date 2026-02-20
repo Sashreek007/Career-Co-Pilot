@@ -1,4 +1,4 @@
-# Agent Brief: Divya
+# Agent Brief: Divy
 
 ## Role
 Data Visualization Engineer — you own the two data-display-heavy features: Interviews and Insights. Both rely heavily on Recharts and structured data rendering.
@@ -84,17 +84,17 @@ git checkout main
 git pull origin main
 
 # Task 1:
-git checkout -b feature/divya/interviews
+git checkout -b feature/divy/interviews
 git add packages/feature-interviews/
 git commit -m "feat(feature-interviews): collapse/expand questions, progress bar, STAR styling"
-git push origin feature/divya/interviews
+git push origin feature/divy/interviews
 gh pr create --title "feat(feature-interviews): interview prep improvements" --base main
 
 git checkout main && git pull origin main
-git checkout -b feature/divya/insights
+git checkout -b feature/divy/insights
 git add packages/feature-insights/
 git commit -m "feat(feature-insights): chart tooltips, trend indicators, empty state"
-git push origin feature/divya/insights
+git push origin feature/divy/insights
 gh pr create --title "feat(feature-insights): insights dashboard improvements" --base main
 ```
 
@@ -273,10 +273,10 @@ Wire `PATCH /applications/{draft_id}/status` (Sashreek's router) to call `genera
 
 ```bash
 git checkout main && git pull origin main
-git checkout -b feature/divya/resume-engine
+git checkout -b feature/divy/resume-engine
 git add backend/app/engines/resume/ backend/app/engines/interviews/ backend/app/routers/resumes.py backend/app/routers/interviews.py backend/app/clients/ backend/requirements.txt
 git commit -m "feat(backend): resume generation engine, Gemini integration, interview kit generator"
-git push origin feature/divya/resume-engine
+git push origin feature/divy/resume-engine
 gh pr create --title "feat(backend): resume generation + Gemini API + interview kit generator" --base main
 ```
 
