@@ -1,5 +1,5 @@
 {
-  "name": "@career-copilot/feature-resume-studio",
+  "name": "@career-copilot/feature-settings",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -8,7 +8,6 @@
   "dependencies": {
     "@career-copilot/core": "workspace:*",
     "@career-copilot/ui": "workspace:*",
-    "@career-copilot/api": "workspace:*",
     "react": "^18.3.1",
     "react-router-dom": "^6.22.3",
     "zustand": "^4.5.2",

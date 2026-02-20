@@ -21,7 +21,7 @@ const registry = new FeatureRegistry()
 
 const navItems = registry.getNavItems();
 
-export const router = createBrowserRouter([
+export const router: ReturnType<typeof createBrowserRouter> = createBrowserRouter([
   {
     path: '/',
     element: <AppShell navItems={navItems} />,

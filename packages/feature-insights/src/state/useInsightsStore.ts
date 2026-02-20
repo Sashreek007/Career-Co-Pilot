@@ -1,0 +1,19 @@
+import { create } from 'zustand';
+import { getInsights } from '@career-copilot/api';
+import type { InsightsMetrics } from '@career-copilot/core';
+
+interface InsightsStore {
+  metrics: InsightsMetrics | null;
+  isLoading: boolean;
+  fetchInsights: () => Promise<void>;
+}
+
+export const useInsightsStore = create<InsightsStore>((set) => ({
+  metrics: null,
+  isLoading: false,
+  fetchInsights: async () => {
+    set({ isLoading: true });
+    const res = await getInsights();
+    set({ metrics: res.data, isLoading: false });
+  },
+}));
