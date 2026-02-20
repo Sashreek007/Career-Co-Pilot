@@ -5,7 +5,6 @@ import type {
   Project,
   RoleInterest,
   Skill,
-  SkillLevel,
   UserProfile,
 } from '@career-copilot/core';
 import { PageHeader } from '@career-copilot/ui';
@@ -31,7 +30,6 @@ interface ProfileEditForm {
   certifications: Certification[];
 }
 
-const SKILL_LEVELS: SkillLevel[] = ['beginner', 'intermediate', 'advanced', 'expert'];
 const SENIORITY_LEVELS: RoleInterest['seniority'][] = ['intern', 'entry', 'mid', 'senior'];
 
 function makeId(prefix: string): string {
@@ -459,7 +457,7 @@ export function ProfilePage() {
                 </button>
               </div>
               {form.skills.map((item, index) => (
-                <div key={item.id} className="rounded-lg border border-zinc-800 bg-zinc-950 p-3 grid grid-cols-1 md:grid-cols-5 gap-2">
+                <div key={item.id} className="rounded-lg border border-zinc-800 bg-zinc-950 p-3 flex items-center gap-2">
                   <input
                     className={inputCls}
                     placeholder="Skill"
@@ -473,79 +471,14 @@ export function ProfilePage() {
                       })
                     }
                   />
-                  <select
-                    className={inputCls}
-                    value={item.level}
-                    onChange={(e) =>
-                      setForm((prev) => {
-                        if (!prev) return prev;
-                        const next = [...prev.skills];
-                        next[index] = { ...next[index], level: e.target.value as SkillLevel };
-                        return { ...prev, skills: next };
-                      })
+                  <button
+                    onClick={() =>
+                      setForm((prev) => (prev ? { ...prev, skills: prev.skills.filter((_, i) => i !== index) } : prev))
                     }
+                    className="text-xs rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-red-300 hover:bg-red-500/20"
                   >
-                    {SKILL_LEVELS.map((level) => (
-                      <option key={level} value={level}>
-                        {level}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    className={inputCls}
-                    type="number"
-                    min={0}
-                    max={100}
-                    placeholder="Confidence"
-                    value={item.confidenceScore}
-                    onChange={(e) =>
-                      setForm((prev) => {
-                        if (!prev) return prev;
-                        const next = [...prev.skills];
-                        next[index] = { ...next[index], confidenceScore: clampScore(Number(e.target.value) || 0) };
-                        return { ...prev, skills: next };
-                      })
-                    }
-                  />
-                  <input
-                    className={inputCls}
-                    type="number"
-                    min={0}
-                    step={0.5}
-                    placeholder="Years"
-                    value={item.yearsOfExperience}
-                    onChange={(e) =>
-                      setForm((prev) => {
-                        if (!prev) return prev;
-                        const next = [...prev.skills];
-                        next[index] = { ...next[index], yearsOfExperience: Number(e.target.value) || 0 };
-                        return { ...prev, skills: next };
-                      })
-                    }
-                  />
-                  <div className="flex items-center gap-2">
-                    <input
-                      className={inputCls}
-                      placeholder="Tags (comma-separated)"
-                      value={item.tags.join(', ')}
-                      onChange={(e) =>
-                        setForm((prev) => {
-                          if (!prev) return prev;
-                          const next = [...prev.skills];
-                          next[index] = { ...next[index], tags: splitCsv(e.target.value) };
-                          return { ...prev, skills: next };
-                        })
-                      }
-                    />
-                    <button
-                      onClick={() =>
-                        setForm((prev) => (prev ? { ...prev, skills: prev.skills.filter((_, i) => i !== index) } : prev))
-                      }
-                      className="text-xs rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-red-300 hover:bg-red-500/20"
-                    >
-                      Remove
-                    </button>
-                  </div>
+                    Remove
+                  </button>
                 </div>
               ))}
             </section>
