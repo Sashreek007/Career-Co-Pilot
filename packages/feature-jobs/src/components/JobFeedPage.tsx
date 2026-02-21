@@ -59,6 +59,12 @@ const US_HINTS = [
   'boston',
 ];
 
+const MACOS_CHROME_DEBUG_COMMAND =
+  'open -na "Google Chrome" --args --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --user-data-dir=/tmp/career-copilot-cdp';
+const WINDOWS_CHROME_DEBUG_COMMAND =
+  'chrome.exe --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --user-data-dir=%TEMP%\\career-copilot-cdp';
+const VERIFY_CDP_COMMAND = 'curl http://localhost:9222/json/version';
+
 interface AssistedReviewState {
   draftId: string;
   screenshotUrl?: string;
@@ -231,6 +237,26 @@ export function JobFeedPage() {
     []
   );
 
+  const copyCommand = async (command: string, label: string) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(command);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = command;
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      pushNotice(`${label} command copied. Paste and run it in terminal.`, 'success');
+    } catch {
+      pushNotice(`Could not copy ${label} command. Copy it manually.`, 'error');
+    }
+  };
+
   const handlePrepareResume = (jobId: string) => {
     console.log('[stub] Prepare resume for job', jobId);
   };
@@ -385,7 +411,7 @@ export function JobFeedPage() {
       useVisibleBrowser,
       waitSeconds: 28,
       maxResults: 35,
-      minMatchScore: 0.1,
+      minMatchScore: 0.0,
     });
     setIsDiscovering(false);
 
@@ -606,6 +632,50 @@ export function JobFeedPage() {
                   <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-amber-300">
                     {browserStatus.how_to_start}
                   </pre>
+                  <div className="mt-3 space-y-2">
+                    <div className="rounded-md border border-zinc-700/70 bg-zinc-950/70 p-2">
+                      <div className="mb-1 flex items-center justify-between">
+                        <span className="text-[11px] font-medium text-zinc-300">macOS</span>
+                        <button
+                          onClick={() => void copyCommand(MACOS_CHROME_DEBUG_COMMAND, 'macOS')}
+                          className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] font-medium text-zinc-200 hover:bg-zinc-700"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <code className="block break-all font-mono text-[11px] text-zinc-200">
+                        {MACOS_CHROME_DEBUG_COMMAND}
+                      </code>
+                    </div>
+                    <div className="rounded-md border border-zinc-700/70 bg-zinc-950/70 p-2">
+                      <div className="mb-1 flex items-center justify-between">
+                        <span className="text-[11px] font-medium text-zinc-300">Windows</span>
+                        <button
+                          onClick={() => void copyCommand(WINDOWS_CHROME_DEBUG_COMMAND, 'Windows')}
+                          className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] font-medium text-zinc-200 hover:bg-zinc-700"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <code className="block break-all font-mono text-[11px] text-zinc-200">
+                        {WINDOWS_CHROME_DEBUG_COMMAND}
+                      </code>
+                    </div>
+                    <div className="rounded-md border border-zinc-700/70 bg-zinc-950/70 p-2">
+                      <div className="mb-1 flex items-center justify-between">
+                        <span className="text-[11px] font-medium text-zinc-300">Verify</span>
+                        <button
+                          onClick={() => void copyCommand(VERIFY_CDP_COMMAND, 'Verify')}
+                          className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] font-medium text-zinc-200 hover:bg-zinc-700"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <code className="block break-all font-mono text-[11px] text-zinc-200">
+                        {VERIFY_CDP_COMMAND}
+                      </code>
+                    </div>
+                  </div>
                   {browserStatus.error && (
                     <p className="mt-1.5 text-[11px] text-amber-400/70">{browserStatus.error}</p>
                   )}

@@ -283,31 +283,92 @@ class LinkedInUserAssistedAdapter(_UserAssistedBrowserAdapter):
             () => {
               const rows = [];
               const seen = new Set();
-              const anchors = Array.from(document.querySelectorAll('a[href*="/jobs/view/"]'));
-              for (const anchor of anchors) {
-                const href = (anchor.getAttribute('href') || '').split('?')[0];
-                if (!href || seen.has(href)) continue;
+              const normalizeTitle = (value) => {
+                let title = String(value || '').replace(/\\s+/g, ' ').trim();
+                title = title.replace(/\\s+with verification$/i, '').trim();
+                const words = title.split(' ').filter(Boolean);
+                if (words.length >= 6 && words.length % 2 === 0) {
+                  const half = words.length / 2;
+                  const first = words.slice(0, half).join(' ');
+                  const second = words.slice(half).join(' ');
+                  if (first.toLowerCase() === second.toLowerCase()) {
+                    title = first;
+                  }
+                }
+                return title;
+              };
+              const cardSelectors = [
+                '.jobs-search-results-list li',
+                '.scaffold-layout__list-item',
+                '.jobs-search-results__list-item',
+                '[data-occludable-job-id]',
+                '[data-job-id]'
+              ];
+              const cards = Array.from(
+                new Set(cardSelectors.flatMap((sel) => Array.from(document.querySelectorAll(sel))))
+              );
+
+              const collectRow = (container, anchor) => {
+                if (!anchor) return;
+                const hrefRaw = anchor.getAttribute('href') || '';
+                const href = hrefRaw.split('?')[0].trim();
+                if (!href || !href.includes('/jobs/view/')) return;
+                if (seen.has(href)) return;
                 seen.add(href);
-                const container = anchor.closest('li, article, div');
+
+                const titleNode =
+                  container?.querySelector('.job-card-list__title') ||
+                  container?.querySelector('.base-search-card__title') ||
+                  container?.querySelector('.artdeco-entity-lockup__title a') ||
+                  anchor;
+                const rawTitle =
+                  titleNode?.getAttribute?.('aria-label') ||
+                  titleNode?.textContent ||
+                  anchor?.getAttribute?.('aria-label') ||
+                  anchor?.textContent ||
+                  '';
                 const companyNode =
-                  container?.querySelector('.base-search-card__subtitle') ||
+                  container?.querySelector('.artdeco-entity-lockup__subtitle') ||
                   container?.querySelector('.job-card-container__company-name') ||
+                  container?.querySelector('.base-search-card__subtitle') ||
                   container?.querySelector('h4');
                 const locationNode =
-                  container?.querySelector('.job-search-card__location') ||
-                  container?.querySelector('.job-card-container__metadata-item');
+                  container?.querySelector('.job-card-container__metadata-item') ||
+                  container?.querySelector('.artdeco-entity-lockup__caption') ||
+                  container?.querySelector('.job-search-card__location');
                 const dateNode =
                   container?.querySelector('time') ||
-                  container?.querySelector('.job-search-card__listdate');
+                  container?.querySelector('.job-search-card__listdate') ||
+                  container?.querySelector('.job-card-container__footer-item');
+                const descNode =
+                  container?.querySelector('.job-card-list__description') ||
+                  container?.querySelector('.base-search-card__metadata') ||
+                  container?.querySelector('.job-card-container__job-insight-text');
                 rows.push({
-                  title: (anchor.textContent || '').trim(),
+                  title: normalizeTitle(rawTitle),
                   company: (companyNode?.textContent || '').trim(),
                   location: (locationNode?.textContent || '').trim(),
-                  description: (container?.innerText || '').trim(),
+                  description: (descNode?.textContent || container?.innerText || '').trim(),
                   source_url: href,
                   posted_date: (dateNode?.textContent || '').trim(),
                 });
+              };
+
+              for (const card of cards) {
+                const anchor =
+                  card.querySelector('a.job-card-list__title--link') ||
+                  card.querySelector('.artdeco-entity-lockup__title a') ||
+                  card.querySelector('a[href*="/jobs/view/"]');
+                collectRow(card, anchor);
               }
+
+              if (rows.length < 5) {
+                const anchors = Array.from(document.querySelectorAll('a[href*="/jobs/view/"]'));
+                for (const anchor of anchors) {
+                  collectRow(anchor.closest('li, article, div'), anchor);
+                }
+              }
+
               return rows;
             }
             """
