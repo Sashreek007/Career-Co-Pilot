@@ -3,7 +3,13 @@ import { SplitPane, PageHeader } from '@career-copilot/ui';
 import { useJobsStore } from '../state/useJobsStore';
 import { JobList } from './JobList';
 import { JobDetail } from './JobDetail';
-import { approveDraft, prepareDraft, runAssistedConfirmSubmit, runAssistedFill } from '@career-copilot/api';
+import {
+  approveDraft,
+  importExternalJob,
+  prepareDraft,
+  runAssistedConfirmSubmit,
+  runAssistedFill,
+} from '@career-copilot/api';
 
 export function JobFeedPage() {
   const { jobs, selectedJobId, isLoading, fetchJobs, selectJob, markInterested } = useJobsStore();
@@ -86,13 +92,44 @@ export function JobFeedPage() {
     void runAssistedApplicationFlow(jobId);
   };
 
+  const handleImportExternalJob = async () => {
+    const sourceUrl = window.prompt('Paste the job URL (LinkedIn/Indeed/Greenhouse or any direct posting).');
+    if (!sourceUrl) return;
+
+    const title = window.prompt('Job title');
+    if (!title) return;
+
+    const company = window.prompt('Company name');
+    if (!company) return;
+
+    const location = window.prompt('Location (optional)', 'Remote') ?? 'Remote';
+    const imported = await importExternalJob({ sourceUrl, title, company, location });
+    if (imported.error || !imported.data) {
+      window.alert(imported.error ?? 'Failed to import external job.');
+      return;
+    }
+
+    await fetchJobs();
+    selectJob(imported.data.id);
+    window.alert('External job imported. You can now run Assisted Apply on it.');
+  };
+
   return (
     <div className="h-full flex flex-col">
       <div className="px-6 pt-6 pb-0">
-        <PageHeader
-          title="Job Feed"
-          description={`${jobs.length} opportunities matched to your profile`}
-        />
+        <div className="flex items-start justify-between gap-4">
+          <PageHeader
+            title="Job Feed"
+            description={`${jobs.length} opportunities matched to your profile`}
+          />
+          <button
+            onClick={() => void handleImportExternalJob()}
+            className="mt-1 px-3 py-1.5 rounded-md bg-zinc-700 hover:bg-zinc-600 text-zinc-100 text-xs font-medium transition-colors"
+            title="Manually add a job posting URL without scraping"
+          >
+            Import Job URL
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-hidden mt-4">

@@ -25,6 +25,23 @@ type BackendJob = {
   discovered_at?: string | null;
 };
 
+export interface ImportJobInput {
+  sourceUrl: string;
+  title: string;
+  company: string;
+  location?: string;
+  description?: string;
+  remote?: boolean;
+}
+
+function toErrorMessage(payload: unknown, fallback: string): string {
+  if (payload && typeof payload === 'object' && 'detail' in payload) {
+    const detail = (payload as { detail?: unknown }).detail;
+    if (typeof detail === 'string' && detail.trim()) return detail;
+  }
+  return fallback;
+}
+
 function normaliseTier(
   tier: string | null | undefined,
   scorePercent: number
@@ -127,4 +144,28 @@ export async function markJobInterested(id: string): Promise<ApiResponse<void>> 
   // stub — real implementation updates local DB
   console.log(`[mock] Marked job ${id} as interested`);
   return { data: undefined, status: 200 };
+}
+
+export async function importExternalJob(input: ImportJobInput): Promise<ApiResponse<Job | null>> {
+  const response = await fetch('/api/jobs/import-link', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      source_url: input.sourceUrl,
+      title: input.title,
+      company: input.company,
+      location: input.location,
+      description: input.description,
+      remote: Boolean(input.remote),
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    return {
+      data: null,
+      error: toErrorMessage(payload, 'Failed to import external job'),
+      status: response.status,
+    };
+  }
+  return { data: mapBackendJob(payload as BackendJob), status: response.status };
 }
