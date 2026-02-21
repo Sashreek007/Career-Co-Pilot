@@ -1,5 +1,11 @@
 import json
+import logging
+import re
 from typing import Any
+
+from ...clients.gemini import get_gemini_client
+
+logger = logging.getLogger(__name__)
 
 
 def _as_lower(value: Any) -> str:
@@ -38,13 +44,89 @@ def _is_experience_years_prompt(label_lower: str) -> bool:
     return has_experience and has_year
 
 
+def _clean_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _profile_context_snippet(user_profile: dict[str, Any]) -> dict[str, Any]:
+    raw_skills = _parse_skills(user_profile.get("skills_json"))
+    skill_names: list[str] = []
+    for skill in raw_skills:
+        if isinstance(skill, dict):
+            name = _clean_text(skill.get("name"))
+            if name:
+                skill_names.append(name)
+        elif isinstance(skill, str):
+            name = _clean_text(skill)
+            if name:
+                skill_names.append(name)
+
+    experience = user_profile.get("experience_json")
+    role_snippets: list[str] = []
+    if isinstance(experience, str):
+        try:
+            experience = json.loads(experience)
+        except json.JSONDecodeError:
+            experience = []
+    if isinstance(experience, list):
+        for item in experience[:3]:
+            if not isinstance(item, dict):
+                continue
+            title = _clean_text(item.get("title"))
+            company = _clean_text(item.get("company"))
+            if title and company:
+                role_snippets.append(f"{title} at {company}")
+
+    return {
+        "name": _clean_text(user_profile.get("name")),
+        "summary": _clean_text(user_profile.get("summary")),
+        "skills": skill_names[:10],
+        "experience": role_snippets,
+    }
+
+
+def _generate_ai_answer(
+    client: Any,
+    *,
+    label: str,
+    job: dict[str, Any],
+    user_profile: dict[str, Any],
+) -> str | None:
+    if client is None:
+        return None
+
+    prompt = (
+        "You are drafting a job application field answer.\n"
+        "Return only plain text for the field, no markdown.\n"
+        "Rules:\n"
+        "- Use only the profile/job context below.\n"
+        "- Do not invent facts, names, numbers, or achievements.\n"
+        "- Keep concise (1-4 sentences).\n\n"
+        f"Field label: {label}\n"
+        f"Job: {json.dumps({'title': job.get('title'), 'company': job.get('company')})}\n"
+        f"Profile: {json.dumps(_profile_context_snippet(user_profile))}\n"
+    )
+
+    try:
+        response = client.generate_content(prompt)
+        text = _clean_text(getattr(response, "text", ""))
+        if not text:
+            return None
+        if text.startswith("[REQUIRES_REVIEW:"):
+            return None
+        return text[:600]
+    except Exception:
+        logger.debug("AI draft answer generation failed for label=%s", label, exc_info=True)
+        return None
+
+
 def generate_draft_answers(
     job: dict[str, Any], user_profile: dict[str, Any], form_fields: list[dict[str, Any]]
 ) -> dict[str, Any]:
     """Populate fields conservatively. Unknown values are explicit review placeholders."""
-    _ = job
     answers: dict[str, Any] = {}
     skills = _parse_skills(user_profile.get("skills_json"))
+    ai_client = get_gemini_client()
 
     for field in form_fields:
         label = str(field.get("label") or "").strip() or "Unknown Field"
@@ -87,7 +169,8 @@ def generate_draft_answers(
             continue
 
         if _is_essay_prompt(label_lower):
-            answers[label] = f"[REQUIRES_REVIEW: {label}]"
+            ai_answer = _generate_ai_answer(ai_client, label=label, job=job, user_profile=user_profile)
+            answers[label] = ai_answer or f"[REQUIRES_REVIEW: {label}]"
             continue
 
         answers[label] = f"[REQUIRES_REVIEW: {label}]"

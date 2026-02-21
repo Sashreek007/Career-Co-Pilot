@@ -33,7 +33,7 @@ export function JobFeedPage() {
 
     const startAssistedFlow = window.confirm(
       [
-        'Assisted Apply opens your browser and runs in user-assisted mode.',
+        'AI-Assisted Apply opens your browser and runs in user-assisted mode.',
         'You stay in control, and final submission requires a second explicit confirmation.',
         '',
         `Source: ${targetJob.source}`,
@@ -66,7 +66,7 @@ export function JobFeedPage() {
 
     const finalConfirmation = window.confirm(
       [
-        'Draft fields were filled in assisted mode.',
+        'Draft fields were filled in AI-assisted mode.',
         fillResult.data.screenshot_path
           ? `Review artifact: ${fillResult.data.screenshot_path}`
           : 'No screenshot path returned.',
