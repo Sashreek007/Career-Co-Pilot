@@ -158,7 +158,6 @@ export function JobFeedPage() {
   const [startApplyJobId, setStartApplyJobId] = useState<string | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
   const [showDiscoveryModal, setShowDiscoveryModal] = useState(false);
-  const [showBrowserHelperModal, setShowBrowserHelperModal] = useState(false);
   const [isPlanningDiscovery, setIsPlanningDiscovery] = useState(false);
   const [browserStatus, setBrowserStatus] = useState<BrowserConnectionStatus | null>(null);
   const [isCheckingBrowser, setIsCheckingBrowser] = useState(false);
@@ -478,11 +477,6 @@ export function JobFeedPage() {
     }
   };
 
-  const handleRefreshAfterCapture = async () => {
-    await fetchJobs();
-    pushNotice('Job feed refreshed after browser-helper capture.', 'success');
-  };
-
   const runningScreenshotUrl = withCacheBust(
     runningProgress?.latest_screenshot_url,
     runningProgress?.updated_at
@@ -524,13 +518,6 @@ export function JobFeedPage() {
               title="AI agent auto-selects source/query, controls your browser, and imports matched jobs"
             >
               {isDiscovering ? 'Searching…' : 'AI Auto Search'}
-            </button>
-            <button
-              onClick={() => setShowBrowserHelperModal(true)}
-              className="rounded-md bg-blue-700 px-3 py-1.5 text-xs font-medium text-zinc-100 transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-70"
-              title="Fallback manual capture through Chrome extension"
-            >
-              Browser Helper
             </button>
             <button
               onClick={() => setShowImportModal(true)}
@@ -788,46 +775,6 @@ export function JobFeedPage() {
                 className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
               >
                 {isDiscovering ? 'Searching…' : 'Run Auto Search'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showBrowserHelperModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/70" onClick={() => setShowBrowserHelperModal(false)} />
-          <div className="relative w-full max-w-lg rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
-            <div className="border-b border-zinc-800 px-5 py-4">
-              <h3 className="text-base font-semibold text-zinc-100">Browser Helper Extension</h3>
-              <p className="mt-1 text-sm text-zinc-400">
-                Capture jobs directly from your visible LinkedIn/Indeed tab using the Chrome extension.
-              </p>
-            </div>
-            <div className="space-y-4 px-5 py-4">
-              <ol className="list-decimal space-y-2 pl-5 text-sm text-zinc-300">
-                <li>Load extension folder: <code className="font-mono">browser-helper-extension</code></li>
-                <li>Open LinkedIn/Indeed Jobs in Chrome.</li>
-                <li>Click extension: detect page, then capture current/list jobs.</li>
-                <li>Return here and refresh the job feed.</li>
-              </ol>
-              <div className="rounded-md border border-zinc-700 bg-zinc-950/70 p-3 text-xs text-zinc-400">
-                Use this when you want manual, extension-driven capture. For agent-operated search, use
-                AI Browser Search from the main actions.
-              </div>
-            </div>
-            <div className="flex items-center justify-end gap-2 border-t border-zinc-800 px-5 py-4">
-              <button
-                onClick={() => setShowBrowserHelperModal(false)}
-                className="rounded-md bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                Close
-              </button>
-              <button
-                onClick={() => void handleRefreshAfterCapture()}
-                className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                Refresh Jobs
               </button>
             </div>
           </div>
