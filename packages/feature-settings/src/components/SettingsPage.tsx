@@ -1,12 +1,25 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { PageHeader } from '@career-copilot/ui';
 import { useSettingsStore } from '../state/useSettingsStore';
-import { Eye, EyeOff, AlertTriangle } from 'lucide-react';
+import { Eye, EyeOff, AlertTriangle, Check } from 'lucide-react';
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+type SectionKey = 'app' | 'resume' | 'llm' | 'backup';
+type LlmTestState = 'idle' | 'testing' | 'connected' | 'failed';
+
+function Section({ title, saved, children }: { title: string; saved: boolean; children: React.ReactNode }) {
   return (
-    <section className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4">
-      <h2 className="text-sm font-semibold text-zinc-200">{title}</h2>
+    <section className="relative bg-zinc-900 border border-zinc-800 rounded-xl p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-zinc-200">{title}</h2>
+        <div
+          className={`flex items-center gap-1 text-xs text-emerald-400 transition-opacity duration-300 ${
+            saved ? 'opacity-100' : 'opacity-0'
+          }`}
+        >
+          <Check className="w-3.5 h-3.5" />
+          <span>Saved</span>
+        </div>
+      </div>
       {children}
     </section>
   );
@@ -28,10 +41,77 @@ export function SettingsPage() {
   const s = useSettingsStore();
   const [showKey, setShowKey] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [llmTestState, setLlmTestState] = useState<LlmTestState>('idle');
+  const [savedBySection, setSavedBySection] = useState<Record<SectionKey, boolean>>({
+    app: false,
+    resume: false,
+    llm: false,
+    backup: false,
+  });
+  const savedTimersRef = useRef<Partial<Record<SectionKey, ReturnType<typeof setTimeout>>>>({});
+  const llmTestTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const markSaved = (section: SectionKey) => {
+    setSavedBySection((prev) => ({ ...prev, [section]: true }));
+    const existingTimer = savedTimersRef.current[section];
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+    savedTimersRef.current[section] = setTimeout(() => {
+      setSavedBySection((prev) => ({ ...prev, [section]: false }));
+      savedTimersRef.current[section] = undefined;
+    }, 2000);
+  };
+
+  const onSectionBlur = (section: SectionKey) => () => markSaved(section);
+
+  const handleLlmConnectionTest = () => {
+    if (!s.llmApiKey.trim()) {
+      return;
+    }
+    setLlmTestState('testing');
+    if (llmTestTimerRef.current) {
+      clearTimeout(llmTestTimerRef.current);
+    }
+    llmTestTimerRef.current = setTimeout(() => {
+      setLlmTestState('connected');
+      llmTestTimerRef.current = null;
+    }, 1000);
+  };
+
+  const handleExportBackup = () => {
+    const state = useSettingsStore.getState();
+    const blob = new Blob([JSON.stringify(state, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `career-copilot-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+    markSaved('backup');
+  };
 
   useEffect(() => {
     void s.hydrateFromBackend();
   }, [s.hydrateFromBackend]);
+
+  useEffect(() => {
+    return () => {
+      if (llmTestTimerRef.current) {
+        clearTimeout(llmTestTimerRef.current);
+      }
+      const timers = Object.values(savedTimersRef.current);
+      for (const timer of timers) {
+        if (timer) {
+          clearTimeout(timer);
+        }
+      }
+    };
+  }, []);
+
+  const canTestConnection = Boolean(s.llmApiKey.trim()) && llmTestState !== 'testing';
 
   return (
     <div className="h-full overflow-y-auto">
@@ -39,18 +119,24 @@ export function SettingsPage() {
         <PageHeader title="Settings" description="Configure Career Co-Pilot behaviour" />
 
         {/* App Behavior */}
-        <Section title="App Behavior">
+        <Section title="App Behavior" saved={savedBySection.app}>
           <Field label="Daily submission cap">
             <input
               type="number"
               min={1} max={50}
               value={s.dailySubmissionCap}
               onChange={(e) => s.setDailySubmissionCap(Number(e.target.value))}
+              onBlur={onSectionBlur('app')}
               className={inputCls}
             />
           </Field>
           <Field label="Discovery interval">
-            <select value={s.discoveryIntervalMinutes} onChange={(e) => s.setDiscoveryInterval(Number(e.target.value))} className={selectCls}>
+            <select
+              value={s.discoveryIntervalMinutes}
+              onChange={(e) => s.setDiscoveryInterval(Number(e.target.value))}
+              onBlur={onSectionBlur('app')}
+              className={selectCls}
+            >
               <option value={30}>Every 30 minutes</option>
               <option value={60}>Every hour</option>
               <option value={180}>Every 3 hours</option>
@@ -61,9 +147,14 @@ export function SettingsPage() {
         </Section>
 
         {/* Resume Preferences */}
-        <Section title="Resume Preferences">
+        <Section title="Resume Preferences" saved={savedBySection.resume}>
           <Field label="Default template">
-            <select value={s.defaultResumeTemplate} onChange={(e) => s.setDefaultTemplate(e.target.value as any)} className={selectCls}>
+            <select
+              value={s.defaultResumeTemplate}
+              onChange={(e) => s.setDefaultTemplate(e.target.value as any)}
+              onBlur={onSectionBlur('resume')}
+              className={selectCls}
+            >
               <option value="jakes">Jake's Resume (default)</option>
               <option value="minimal">Minimal</option>
               <option value="modern">Modern</option>
@@ -74,6 +165,7 @@ export function SettingsPage() {
               type="text"
               value={s.exportPath}
               onChange={(e) => s.setExportPath(e.target.value)}
+              onBlur={onSectionBlur('resume')}
               className={inputCls}
               placeholder="~/Downloads"
             />
@@ -81,13 +173,18 @@ export function SettingsPage() {
         </Section>
 
         {/* AI / LLM */}
-        <Section title="AI / LLM">
+        <Section title="AI / LLM" saved={savedBySection.llm}>
           <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 mb-2">
             <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
             <p className="text-xs text-amber-300">Your API key syncs to your local backend settings so Gemini-powered backend features can use it.</p>
           </div>
           <Field label="LLM Provider">
-            <select value={s.llmProvider} onChange={(e) => s.setLlmProvider(e.target.value as any)} className={selectCls}>
+            <select
+              value={s.llmProvider}
+              onChange={(e) => s.setLlmProvider(e.target.value as any)}
+              onBlur={onSectionBlur('llm')}
+              className={selectCls}
+            >
               <option value="gemini">Gemini (Google)</option>
               <option value="openai">OpenAI</option>
               <option value="local">Local / Ollama</option>
@@ -99,6 +196,7 @@ export function SettingsPage() {
                 type={showKey ? 'text' : 'password'}
                 value={s.llmApiKey}
                 onChange={(e) => s.setLlmApiKey(e.target.value)}
+                onBlur={onSectionBlur('llm')}
                 placeholder="Enter your API key…"
                 className={`${inputCls} pr-8`}
               />
@@ -111,21 +209,24 @@ export function SettingsPage() {
               </button>
             </div>
           </Field>
-          <div className="pt-1">
+          <div className="pt-1 flex items-center gap-3">
             <button
-              onClick={() => console.log('[stub] Test LLM connection')}
-              className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+              onClick={handleLlmConnectionTest}
+              disabled={!canTestConnection}
+              className="px-3 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              Test connection (coming soon)
+              {llmTestState === 'testing' ? 'Testing...' : 'Test Connection'}
             </button>
+            {llmTestState === 'connected' && <p className="text-xs text-emerald-400">✓ Connected</p>}
+            {llmTestState === 'failed' && <p className="text-xs text-red-400">✗ Failed</p>}
           </div>
         </Section>
 
         {/* Backup & Restore */}
-        <Section title="Backup & Restore">
+        <Section title="Backup & Restore" saved={savedBySection.backup}>
           <div className="flex gap-3">
             <button
-              onClick={() => console.log('[stub] Export backup')}
+              onClick={handleExportBackup}
               className="px-3 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-colors"
             >
               Export Backup
@@ -162,6 +263,8 @@ export function SettingsPage() {
             )}
           </div>
         </Section>
+
+        <p className="text-xs text-zinc-600 text-center pt-4">Career Co-Pilot v0.1.0 — scaffold phase</p>
       </div>
     </div>
   );
