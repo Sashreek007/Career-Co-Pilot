@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -15,11 +16,13 @@ from ...browser_cdp import (
     normalize_cdp_endpoint,
     save_browser_storage_state,
 )
+from ....clients.gemini import get_gemini_client
 from .base import JobSourceAdapter, RawJobData
 
 logger = logging.getLogger(__name__)
 
 _STATE_DIR = Path(__file__).resolve().parents[4] / "data" / "browser_state"
+_DESCRIPTION_FORMAT_CACHE: dict[str, str] = {}
 
 
 def _browser_headless() -> bool:
@@ -54,6 +57,70 @@ def _discovery_visible_browser_default() -> bool:
 
 def _clean_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _clean_description_text(value: Any) -> str:
+    raw = str(value or "").replace("\r", "\n")
+    raw = re.sub(r"[ \t]+\n", "\n", raw)
+    raw = re.sub(r"\n[ \t]+", "\n", raw)
+    raw = re.sub(r"[ \t]{2,}", " ", raw)
+    raw = re.sub(r"\n{3,}", "\n\n", raw)
+    return raw.strip()
+
+
+def _extract_gemini_text(response: Any) -> str:
+    text = str(getattr(response, "text", "") or "").strip()
+    if text:
+        return text
+    candidates = getattr(response, "candidates", None) or []
+    for candidate in candidates:
+        content = getattr(candidate, "content", None)
+        parts = getattr(content, "parts", None) or []
+        fragments: list[str] = []
+        for part in parts:
+            value = str(getattr(part, "text", "") or "").strip()
+            if value:
+                fragments.append(value)
+        if fragments:
+            return "\n".join(fragments).strip()
+    return ""
+
+
+def _format_description_with_ai(text: str) -> str:
+    cleaned = _clean_description_text(text)
+    if len(cleaned) < 180:
+        return cleaned
+
+    flag = os.environ.get("DISCOVERY_AI_DESCRIPTION_FORMAT", "true").strip().lower()
+    if flag in {"0", "false", "no"}:
+        return cleaned
+
+    cache_key = hashlib.sha256(cleaned.encode("utf-8")).hexdigest()
+    cached = _DESCRIPTION_FORMAT_CACHE.get(cache_key)
+    if cached:
+        return cached
+
+    client = get_gemini_client()
+    if client is None:
+        return cleaned
+
+    prompt = (
+        "You are cleaning extracted job description text from a browser page.\n"
+        "Rewrite into clean plain text with short sections and bullets.\n"
+        "Preserve all specific technologies/skills exactly as written (e.g. Python, C++, Node.js, FastAPI).\n"
+        "Do not invent or drop requirements. Remove UI boilerplate and duplicated fragments.\n"
+        "Return plain text only.\n\n"
+        f"RAW_TEXT:\n{cleaned}"
+    )
+    try:
+        response = client.generate_content(prompt)
+        formatted = _clean_description_text(_extract_gemini_text(response))
+        if formatted:
+            _DESCRIPTION_FORMAT_CACHE[cache_key] = formatted
+            return formatted
+    except Exception:
+        logger.debug("AI formatting failed; using raw cleaned description", exc_info=True)
+    return cleaned
 
 
 def _absolute_url(base: str, href: str) -> str:
@@ -108,6 +175,9 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
 
     async def _extract_rows(self, page) -> list[dict[str, str]]:  # pragma: no cover - adapter specific
         raise NotImplementedError
+
+    def _format_description(self, text: str) -> str:
+        return _clean_description_text(text)
 
     async def search(self, query: str, max_results: int = 20) -> list[RawJobData]:
         self.last_error = None
@@ -242,7 +312,7 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
                         title=title,
                         company=_clean_text(row.get("company")) or self.site_name.title(),
                         location=_clean_text(row.get("location")) or "Remote",
-                        description=_clean_text(row.get("description")),
+                        description=self._format_description(str(row.get("description") or "")),
                         source_url=_absolute_url(self.base_url, source_url),
                         source=self.source_label,
                         posted_date=_clean_text(row.get("posted_date")) or None,
@@ -277,10 +347,13 @@ class LinkedInUserAssistedAdapter(_UserAssistedBrowserAdapter):
     search_template = "https://www.linkedin.com/jobs/search/?keywords={query}"
     source_label = "linkedin_browser"
 
+    def _format_description(self, text: str) -> str:
+        return _format_description_with_ai(text)
+
     async def _extract_rows(self, page) -> list[dict[str, str]]:
         return await page.evaluate(
             """
-            () => {
+            async () => {
               const rows = [];
               const seen = new Set();
               const normalizeTitle = (value) => {
@@ -297,6 +370,7 @@ class LinkedInUserAssistedAdapter(_UserAssistedBrowserAdapter):
                 }
                 return title;
               };
+              const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
               const cardSelectors = [
                 '.jobs-search-results-list li',
                 '.scaffold-layout__list-item',
@@ -308,13 +382,37 @@ class LinkedInUserAssistedAdapter(_UserAssistedBrowserAdapter):
                 new Set(cardSelectors.flatMap((sel) => Array.from(document.querySelectorAll(sel))))
               );
 
-              const collectRow = (container, anchor) => {
+              const extractDetailDescription = () => {
+                const nodes = [
+                  document.querySelector('.jobs-description-content__text'),
+                  document.querySelector('.jobs-box__html-content'),
+                  document.querySelector('.jobs-search__job-details--wrapper'),
+                  document.querySelector('.jobs-details__main-content'),
+                  document.querySelector('.jobs-description'),
+                ];
+                for (const node of nodes) {
+                  const text = (node?.innerText || '').trim();
+                  if (text && text.length > 120) return text;
+                }
+                return '';
+              };
+
+              const collectRow = async (container, anchor) => {
                 if (!anchor) return;
                 const hrefRaw = anchor.getAttribute('href') || '';
                 const href = hrefRaw.split('?')[0].trim();
                 if (!href || !href.includes('/jobs/view/')) return;
                 if (seen.has(href)) return;
                 seen.add(href);
+
+                const clickable =
+                  container?.querySelector('a.job-card-list__title--link') ||
+                  container?.querySelector('.artdeco-entity-lockup__title a') ||
+                  anchor;
+                if (clickable) {
+                  clickable.click();
+                  await sleep(280);
+                }
 
                 const titleNode =
                   container?.querySelector('.job-card-list__title') ||
@@ -344,11 +442,16 @@ class LinkedInUserAssistedAdapter(_UserAssistedBrowserAdapter):
                   container?.querySelector('.job-card-list__description') ||
                   container?.querySelector('.base-search-card__metadata') ||
                   container?.querySelector('.job-card-container__job-insight-text');
+                let detailDescription = extractDetailDescription();
+                if (!detailDescription || detailDescription.length < 180) {
+                  await sleep(520);
+                  detailDescription = extractDetailDescription();
+                }
                 rows.push({
                   title: normalizeTitle(rawTitle),
                   company: (companyNode?.textContent || '').trim(),
                   location: (locationNode?.textContent || '').trim(),
-                  description: (descNode?.textContent || container?.innerText || '').trim(),
+                  description: (detailDescription || descNode?.textContent || container?.innerText || '').trim(),
                   source_url: href,
                   posted_date: (dateNode?.textContent || '').trim(),
                 });
@@ -359,13 +462,13 @@ class LinkedInUserAssistedAdapter(_UserAssistedBrowserAdapter):
                   card.querySelector('a.job-card-list__title--link') ||
                   card.querySelector('.artdeco-entity-lockup__title a') ||
                   card.querySelector('a[href*="/jobs/view/"]');
-                collectRow(card, anchor);
+                await collectRow(card, anchor);
               }
 
               if (rows.length < 5) {
                 const anchors = Array.from(document.querySelectorAll('a[href*="/jobs/view/"]'));
                 for (const anchor of anchors) {
-                  collectRow(anchor.closest('li, article, div'), anchor);
+                  await collectRow(anchor.closest('li, article, div'), anchor);
                 }
               }
 

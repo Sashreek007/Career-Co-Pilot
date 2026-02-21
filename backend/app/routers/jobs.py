@@ -286,6 +286,7 @@ def get_jobs(db: sqlite3.Connection = Depends(db_conn)):
         """
         SELECT * FROM jobs
         WHERE is_archived = 0
+          AND source != 'remotive'
         ORDER BY match_score DESC, discovered_at DESC
         """
     ).fetchall()
@@ -312,16 +313,23 @@ def import_job_from_link(payload: ImportJobRequest, db: sqlite3.Connection = Dep
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise HTTPException(status_code=400, detail="source_url must be a valid http(s) URL")
     source_url = _normalize_source_url(source_url)
-    metadata = _fetch_html_metadata(source_url)
+
+    # If browser helper already provided rich fields, skip remote metadata fetch.
+    provided_title = _clean_text(payload.title)
+    provided_company = _clean_text(payload.company)
+    provided_description = _clean_text(payload.description)
+    should_fetch_metadata = not (provided_title and provided_company and provided_description)
+    metadata = _fetch_html_metadata(source_url) if should_fetch_metadata else {}
+
     linkedin_title, linkedin_company = _parse_linkedin_title_parts(source_url, metadata.get("title", ""))
 
-    title = _clean_text(payload.title)
+    title = provided_title
     if title.startswith("http://") or title.startswith("https://"):
         title = ""
     if not title:
         title = linkedin_title or metadata.get("title", "")
 
-    company = _clean_text(payload.company)
+    company = provided_company
     if company.startswith("http://") or company.startswith("https://"):
         company = ""
     if not company:
@@ -329,7 +337,7 @@ def import_job_from_link(payload: ImportJobRequest, db: sqlite3.Connection = Dep
     if not company:
         company = _company_from_host(source_url)
 
-    description = _clean_text(payload.description) or metadata.get("description", "")
+    description = provided_description or metadata.get("description", "")
 
     if not title:
         linkedin_match = re.search(r"/jobs/view/(\d+)", source_url)

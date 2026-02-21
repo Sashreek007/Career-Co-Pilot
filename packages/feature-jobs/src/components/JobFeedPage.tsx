@@ -7,13 +7,17 @@ import { JobDetail } from './JobDetail';
 import {
   type AssistedProgressEvent,
   type AssistedProgressResult,
+  type BrowserConnectionStatus,
+  type BrowserDiscoverySource,
   type ChatMessage,
   approveDraft,
+  checkBrowserConnection,
   getChatMessages,
   getAssistedProgress,
   importExternalJob,
   postChatMessage,
   prepareDraft,
+  runBrowserAssistedDiscovery,
   runAssistedConfirmSubmit,
   runAssistedFill,
 } from '@career-copilot/api';
@@ -55,6 +59,12 @@ const US_HINTS = [
   'boston',
 ];
 
+const MACOS_CHROME_DEBUG_COMMAND =
+  'open -na "Google Chrome" --args --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --user-data-dir=/tmp/career-copilot-cdp';
+const WINDOWS_CHROME_DEBUG_COMMAND =
+  'chrome.exe --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --user-data-dir=%TEMP%\\career-copilot-cdp';
+const VERIFY_CDP_COMMAND = 'curl http://localhost:9222/json/version';
+
 interface AssistedReviewState {
   draftId: string;
   screenshotUrl?: string;
@@ -74,6 +84,11 @@ interface ImportFormState {
   title: string;
   company: string;
   location: string;
+}
+
+interface DiscoveryFormState {
+  source: BrowserDiscoverySource;
+  query: string;
 }
 
 function includesAny(haystack: string, values: string[]): boolean {
@@ -102,6 +117,7 @@ export function JobFeedPage() {
   const [useVisibleBrowser, setUseVisibleBrowser] = useState(true);
   const [assistedReview, setAssistedReview] = useState<AssistedReviewState | null>(null);
   const [isSubmittingFinal, setIsSubmittingFinal] = useState(false);
+  const [isDiscovering, setIsDiscovering] = useState(false);
   const [isRunningFill, setIsRunningFill] = useState(false);
   const [runningDraftId, setRunningDraftId] = useState<string | null>(null);
   const [runningJobUrl, setRunningJobUrl] = useState<string | null>(null);
@@ -113,7 +129,10 @@ export function JobFeedPage() {
   const [notice, setNotice] = useState<NoticeState | null>(null);
   const [startApplyJobId, setStartApplyJobId] = useState<string | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
+  const [showDiscoveryModal, setShowDiscoveryModal] = useState(false);
   const [showBrowserHelperModal, setShowBrowserHelperModal] = useState(false);
+  const [browserStatus, setBrowserStatus] = useState<BrowserConnectionStatus | null>(null);
+  const [isCheckingBrowser, setIsCheckingBrowser] = useState(false);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [isSendingChat, setIsSendingChat] = useState(false);
@@ -123,6 +142,10 @@ export function JobFeedPage() {
     title: '',
     company: '',
     location: 'Remote',
+  });
+  const [discoveryForm, setDiscoveryForm] = useState<DiscoveryFormState>({
+    source: 'linkedin',
+    query: '',
   });
 
   const filteredJobs = useMemo(
@@ -214,6 +237,26 @@ export function JobFeedPage() {
     },
     []
   );
+
+  const copyCommand = async (command: string, label: string) => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(command);
+      } else {
+        const textarea = document.createElement('textarea');
+        textarea.value = command;
+        textarea.style.position = 'fixed';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      }
+      pushNotice(`${label} command copied. Paste and run it in terminal.`, 'success');
+    } catch {
+      pushNotice(`Could not copy ${label} command. Copy it manually.`, 'error');
+    }
+  };
 
   const handlePrepareResume = (jobId: string) => {
     console.log('[stub] Prepare resume for job', jobId);
@@ -335,6 +378,56 @@ export function JobFeedPage() {
     pushNotice('External job imported. You can now run Assisted Apply on it.', 'success');
   };
 
+  const handleCheckBrowser = async () => {
+    setIsCheckingBrowser(true);
+    const result = await checkBrowserConnection();
+    setBrowserStatus(result.data);
+    setIsCheckingBrowser(false);
+  };
+
+  const openDiscoveryModal = () => {
+    const defaultQuery =
+      locationFilter === 'canada'
+        ? 'software engineer canada'
+        : locationFilter === 'us'
+          ? 'software engineer united states'
+          : 'software engineer remote';
+    setDiscoveryForm({ source: 'linkedin', query: defaultQuery });
+    setShowDiscoveryModal(true);
+    void handleCheckBrowser();
+  };
+
+  const handleBrowserAssistedDiscovery = async () => {
+    const query = discoveryForm.query.trim();
+    if (!query) {
+      pushNotice('Search query is required.', 'error');
+      return;
+    }
+
+    setIsDiscovering(true);
+    const result = await runBrowserAssistedDiscovery({
+      source: discoveryForm.source,
+      query,
+      useVisibleBrowser,
+      waitSeconds: 28,
+      maxResults: 35,
+      minMatchScore: 0.0,
+    });
+    setIsDiscovering(false);
+
+    if (result.error) {
+      pushNotice(result.error, 'error');
+      return;
+    }
+
+    setShowDiscoveryModal(false);
+    await fetchJobs();
+    pushNotice(
+      `AI browser search complete (${result.data.source}): ${result.data.jobs_new} new jobs imported from ${result.data.jobs_found} found.`,
+      'success'
+    );
+  };
+
   const handleRefreshAfterCapture = async () => {
     await fetchJobs();
     pushNotice('Job feed refreshed after browser-helper capture.', 'success');
@@ -375,9 +468,17 @@ export function JobFeedPage() {
               Visible Browser
             </label>
             <button
+              onClick={openDiscoveryModal}
+              disabled={isDiscovering}
+              className="rounded-md bg-blue-700 px-3 py-1.5 text-xs font-medium text-zinc-100 transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-70"
+              title="AI agent controls your visible browser, runs search, and imports matched jobs"
+            >
+              {isDiscovering ? 'Searching…' : 'AI Browser Search'}
+            </button>
+            <button
               onClick={() => setShowBrowserHelperModal(true)}
               className="rounded-md bg-blue-700 px-3 py-1.5 text-xs font-medium text-zinc-100 transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-70"
-              title="Use the Chrome extension helper to capture jobs from your active browser tab"
+              title="Fallback manual capture through Chrome extension"
             >
               Browser Helper
             </button>
@@ -493,6 +594,162 @@ export function JobFeedPage() {
         </div>
       )}
 
+      {showDiscoveryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/70" onClick={() => setShowDiscoveryModal(false)} />
+          <div className="relative w-full max-w-lg rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
+            <div className="border-b border-zinc-800 px-5 py-4">
+              <h3 className="text-base font-semibold text-zinc-100">AI Browser Search</h3>
+              <p className="mt-1 text-sm text-zinc-400">
+                Agent operates your visible browser session, runs search, and imports matched jobs.
+              </p>
+            </div>
+
+            <div className="border-b border-zinc-800 px-5 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  {isCheckingBrowser ? (
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-zinc-500" />
+                  ) : browserStatus?.connected ? (
+                    <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                  ) : (
+                    <span className="h-2 w-2 rounded-full bg-red-500" />
+                  )}
+                  <span className="text-xs text-zinc-300">
+                    {isCheckingBrowser
+                      ? 'Checking Chrome connection…'
+                      : browserStatus?.connected
+                        ? `Chrome connected${browserStatus.browser_info?.browser ? ` — ${browserStatus.browser_info.browser}` : ''}`
+                        : browserStatus
+                          ? 'Chrome not detected'
+                          : 'Browser status unknown'}
+                  </span>
+                </div>
+                <button
+                  onClick={() => void handleCheckBrowser()}
+                  disabled={isCheckingBrowser}
+                  className="rounded-md bg-zinc-800 px-2.5 py-1 text-[11px] font-medium text-zinc-300 hover:bg-zinc-700 disabled:opacity-50"
+                >
+                  {isCheckingBrowser ? 'Checking…' : 'Re-check'}
+                </button>
+              </div>
+
+              {!isCheckingBrowser && browserStatus && !browserStatus.connected && (
+                <div className="mt-3 rounded-md border border-amber-700/40 bg-amber-950/30 px-3 py-2.5">
+                  <p className="mb-1.5 text-xs font-medium text-amber-200">
+                    Start Chrome with remote debugging to connect:
+                  </p>
+                  <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-amber-300">
+                    {browserStatus.how_to_start}
+                  </pre>
+                  <div className="mt-3 space-y-2">
+                    <div className="rounded-md border border-zinc-700/70 bg-zinc-950/70 p-2">
+                      <div className="mb-1 flex items-center justify-between">
+                        <span className="text-[11px] font-medium text-zinc-300">macOS</span>
+                        <button
+                          onClick={() => void copyCommand(MACOS_CHROME_DEBUG_COMMAND, 'macOS')}
+                          className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] font-medium text-zinc-200 hover:bg-zinc-700"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <code className="block break-all font-mono text-[11px] text-zinc-200">
+                        {MACOS_CHROME_DEBUG_COMMAND}
+                      </code>
+                    </div>
+                    <div className="rounded-md border border-zinc-700/70 bg-zinc-950/70 p-2">
+                      <div className="mb-1 flex items-center justify-between">
+                        <span className="text-[11px] font-medium text-zinc-300">Windows</span>
+                        <button
+                          onClick={() => void copyCommand(WINDOWS_CHROME_DEBUG_COMMAND, 'Windows')}
+                          className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] font-medium text-zinc-200 hover:bg-zinc-700"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <code className="block break-all font-mono text-[11px] text-zinc-200">
+                        {WINDOWS_CHROME_DEBUG_COMMAND}
+                      </code>
+                    </div>
+                    <div className="rounded-md border border-zinc-700/70 bg-zinc-950/70 p-2">
+                      <div className="mb-1 flex items-center justify-between">
+                        <span className="text-[11px] font-medium text-zinc-300">Verify</span>
+                        <button
+                          onClick={() => void copyCommand(VERIFY_CDP_COMMAND, 'Verify')}
+                          className="rounded bg-zinc-800 px-2 py-0.5 text-[10px] font-medium text-zinc-200 hover:bg-zinc-700"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <code className="block break-all font-mono text-[11px] text-zinc-200">
+                        {VERIFY_CDP_COMMAND}
+                      </code>
+                    </div>
+                  </div>
+                  {browserStatus.error && (
+                    <p className="mt-1.5 text-[11px] text-amber-400/70">{browserStatus.error}</p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-4 px-5 py-4">
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                  Source
+                </span>
+                <select
+                  value={discoveryForm.source}
+                  onChange={(event) =>
+                    setDiscoveryForm((prev) => ({
+                      ...prev,
+                      source: event.target.value as BrowserDiscoverySource,
+                    }))
+                  }
+                  className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100"
+                >
+                  <option value="linkedin">LinkedIn</option>
+                  <option value="indeed">Indeed</option>
+                </select>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                  Search Query
+                </span>
+                <input
+                  type="text"
+                  value={discoveryForm.query}
+                  onChange={(event) =>
+                    setDiscoveryForm((prev) => ({
+                      ...prev,
+                      query: event.target.value,
+                    }))
+                  }
+                  placeholder="software engineer canada"
+                  className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100"
+                />
+              </label>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-zinc-800 px-5 py-4">
+              <button
+                onClick={() => setShowDiscoveryModal(false)}
+                disabled={isDiscovering}
+                className="rounded-md bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => void handleBrowserAssistedDiscovery()}
+                disabled={isDiscovering || !discoveryForm.query.trim()}
+                className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {isDiscovering ? 'Searching…' : 'Run AI Search'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showBrowserHelperModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/70" onClick={() => setShowBrowserHelperModal(false)} />
@@ -511,8 +768,8 @@ export function JobFeedPage() {
                 <li>Return here and refresh the job feed.</li>
               </ol>
               <div className="rounded-md border border-zinc-700 bg-zinc-950/70 p-3 text-xs text-zinc-400">
-                This replaces legacy in-app browser scraping discovery. Job capture/import now happens from
-                your local Chrome extension session.
+                Use this when you want manual, extension-driven capture. For agent-operated search, use
+                AI Browser Search from the main actions.
               </div>
             </div>
             <div className="flex items-center justify-end gap-2 border-t border-zinc-800 px-5 py-4">
