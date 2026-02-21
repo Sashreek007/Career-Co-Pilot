@@ -1,6 +1,8 @@
 import asyncio
 import sqlite3
 from datetime import datetime
+from urllib.error import URLError
+from urllib.request import urlopen
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -255,6 +257,51 @@ def get_discovery_status():
         return dict(row)
     finally:
         conn.close()
+
+
+@router.get("/browser-status")
+def get_browser_status(cdp_endpoint: str | None = None):
+    """
+    Check whether a Chrome browser with remote debugging is reachable.
+    Tries to connect to the CDP /json endpoint and returns connected=true if it succeeds.
+    """
+    import os
+    endpoint = (cdp_endpoint or "").strip() or os.environ.get(
+        "DISCOVERY_BROWSER_CDP_ENDPOINT",
+        "http://host.docker.internal:9222",
+    )
+    # Normalise: strip trailing slash, ensure no path
+    endpoint = endpoint.rstrip("/")
+    check_url = f"{endpoint}/json/version"
+    connected = False
+    browser_info: dict = {}
+    error: str | None = None
+    try:
+        with urlopen(check_url, timeout=3) as resp:  # noqa: S310
+            import json as _json
+            data = _json.loads(resp.read().decode("utf-8", errors="ignore"))
+            connected = True
+            browser_info = {
+                "browser": data.get("Browser", ""),
+                "webSocketDebuggerUrl": data.get("webSocketDebuggerUrl", ""),
+            }
+    except URLError as exc:
+        error = f"Could not reach Chrome at {endpoint}: {exc.reason}"
+    except Exception as exc:
+        error = str(exc)
+
+    return {
+        "connected": connected,
+        "endpoint": endpoint,
+        "browser_info": browser_info,
+        "error": error,
+        "how_to_start": (
+            "macOS/Linux: google-chrome --remote-debugging-port=9222 --no-first-run\n"
+            "Windows:     chrome.exe --remote-debugging-port=9222\n"
+            "Docker backend endpoint: http://host.docker.internal:9222\n"
+            "Host backend endpoint:   http://localhost:9222"
+        ),
+    }
 
 
 @router.get("/sources")

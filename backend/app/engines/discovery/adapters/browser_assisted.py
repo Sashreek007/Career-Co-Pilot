@@ -9,8 +9,8 @@ from urllib.parse import quote_plus
 from playwright.async_api import async_playwright
 
 from ...selenium_cdp import (
-    bootstrap_selenium_cdp_session,
-    close_selenium_session,
+    get_chrome_executable_path,
+    get_chrome_user_profile_dir,
     load_browser_storage_state,
     save_browser_storage_state,
 )
@@ -39,7 +39,7 @@ def _discovery_cdp_endpoint() -> str:
     value = os.environ.get("DISCOVERY_BROWSER_CDP_ENDPOINT", "").strip()
     if value:
         return value
-    return "http://browser:9222"
+    return "http://host.docker.internal:9222"
 
 
 def _discovery_visible_browser_default() -> bool:
@@ -119,12 +119,12 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
         page = None
         close_browser = True
         close_context = True
-        selenium_session_delete_url: str | None = None
 
         async def _restore_visible_state() -> None:
             if context is None:
                 return
-            state = load_browser_storage_state("visible_session")
+            # Use site-specific key so linkedin/indeed sessions are stored separately
+            state = load_browser_storage_state(self.site_name)
             cookies = state.get("cookies")
             if isinstance(cookies, list) and cookies:
                 await context.add_cookies(cookies)
@@ -134,7 +134,7 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
                 return
             cookies = await context.cookies()
             if isinstance(cookies, list):
-                save_browser_storage_state({"cookies": cookies}, "visible_session")
+                save_browser_storage_state({"cookies": cookies}, self.site_name)
 
         try:
             playwright = await async_playwright().start()
@@ -142,18 +142,15 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
             if self.use_visible_browser:
                 try:
                     browser = await playwright.chromium.connect_over_cdp(self.cdp_endpoint)
-                except Exception:
-                    fallback_endpoint, delete_url, fallback_error = bootstrap_selenium_cdp_session(
-                        cdp_endpoint=self.cdp_endpoint,
-                        selenium_remote_url=os.environ.get("DISCOVERY_SELENIUM_REMOTE_URL", "").strip(),
-                    )
-                    if not fallback_endpoint:
-                        raise RuntimeError(
-                            "Could not connect to visible browser session."
-                            + (f" {fallback_error}" if fallback_error else "")
-                        ) from None
-                    selenium_session_delete_url = delete_url
-                    browser = await playwright.chromium.connect_over_cdp(fallback_endpoint)
+                except Exception as cdp_exc:
+                    raise RuntimeError(
+                        f"Could not connect to your Chrome browser at {self.cdp_endpoint}. "
+                        "Start Chrome with remote debugging enabled:\n"
+                        '  macOS/Linux: google-chrome --remote-debugging-port=9222 --no-first-run\n'
+                        '  Windows:     chrome.exe --remote-debugging-port=9222\n'
+                        "If backend runs in Docker, set DISCOVERY_BROWSER_CDP_ENDPOINT=http://host.docker.internal:9222. "
+                        "If backend runs on your host directly, set DISCOVERY_BROWSER_CDP_ENDPOINT=http://localhost:9222."
+                    ) from cdp_exc
                 close_browser = False
                 if browser.contexts:
                     context = browser.contexts[0]
@@ -163,13 +160,32 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
                     close_context = True
                 await _restore_visible_state()
             else:
-                browser = await playwright.chromium.launch(headless=_browser_headless())
-                context_kwargs: dict[str, Any] = {}
-                if context_state:
-                    context_kwargs["storage_state"] = context_state
-                context = await browser.new_context(**context_kwargs)
-                close_browser = True
-                close_context = True
+                user_data_dir = get_chrome_user_profile_dir()
+                executable = get_chrome_executable_path()
+                if user_data_dir:
+                    # Launch with the user's real Chrome profile — keeps all saved logins/sessions
+                    launch_kwargs: dict[str, Any] = {
+                        "headless": _browser_headless(),
+                        "args": ["--no-first-run", "--no-default-browser-check", "--no-sandbox"],
+                    }
+                    if executable:
+                        launch_kwargs["executable_path"] = executable
+                    context = await playwright.chromium.launch_persistent_context(
+                        user_data_dir,
+                        **launch_kwargs,
+                    )
+                    browser = None
+                    close_browser = False
+                    close_context = True
+                else:
+                    # Fall back to cookie-injection mode (no Chrome profile found)
+                    browser = await playwright.chromium.launch(headless=_browser_headless())
+                    context_kwargs: dict[str, Any] = {}
+                    if context_state:
+                        context_kwargs["storage_state"] = context_state
+                    context = await browser.new_context(**context_kwargs)
+                    close_browser = True
+                    close_context = True
 
             if context is None:
                 raise RuntimeError("Could not create browser context for discovery.")
@@ -184,12 +200,28 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
             await page.goto(search_url, wait_until="domcontentloaded")
             await page.wait_for_timeout(wait_ms)
 
-            # Scroll to load more rows before extraction.
-            for _ in range(3):
+            # Adaptive scroll: keep scrolling until max_results are visible or no new rows load.
+            prev_count = 0
+            stale_scrolls = 0
+            rows: list[dict[str, str]] = []
+            for _ in range(15):  # hard ceiling of 15 scrolls
                 await page.mouse.wheel(0, 1800)
                 await page.wait_for_timeout(600)
+                rows = await self._extract_rows(page)
+                if len(rows) >= max_results:
+                    break
+                if len(rows) == prev_count:
+                    stale_scrolls += 1
+                    if stale_scrolls >= 3:
+                        break  # no new rows loading — relevance exhausted
+                else:
+                    stale_scrolls = 0
+                prev_count = len(rows)
 
-            rows = await self._extract_rows(page)
+            if not rows:
+                rows = await self._extract_rows(page)
+
+            # Persist session state keyed by site name so linkedin/indeed don't overwrite each other
             if close_context:
                 await context.storage_state(path=str(state_file))
 
@@ -229,8 +261,6 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
                 await context.close()
             if browser is not None and close_browser:
                 await browser.close()
-            if selenium_session_delete_url:
-                close_selenium_session(selenium_session_delete_url)
             if playwright is not None:
                 await playwright.stop()
 

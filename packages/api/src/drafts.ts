@@ -1,5 +1,23 @@
 import type { ApiResponse } from './types';
 
+export interface ChatMessage {
+  role: 'ai' | 'user';
+  text: string;
+  at: string;
+}
+
+export interface ChatThreadResult {
+  draft_id: string;
+  messages: ChatMessage[];
+}
+
+export interface PostChatMessageResult {
+  ok: boolean;
+  draft_id: string;
+  applied: string;
+  messages: ChatMessage[];
+}
+
 export interface AssistedDraft {
   id: string;
   status: string;
@@ -271,4 +289,73 @@ export async function sendAssistedGuidance(
     },
     status: response.status,
   };
+}
+
+function parseChatMessages(raw: unknown): ChatMessage[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item: unknown) => {
+      if (!item || typeof item !== 'object') return null;
+      const m = item as Record<string, unknown>;
+      const role = m.role === 'user' ? 'user' : 'ai';
+      const text = typeof m.text === 'string' ? m.text : '';
+      const at = typeof m.at === 'string' ? m.at : '';
+      return text ? ({ role, text, at } as ChatMessage) : null;
+    })
+    .filter((m): m is ChatMessage => m !== null);
+}
+
+export async function getChatMessages(draftId: string): Promise<ApiResponse<ChatThreadResult>> {
+  try {
+    const response = await fetch(`/api/drafts/${encodeURIComponent(draftId)}/messages`);
+    const payload = await response.json();
+    if (!response.ok) {
+      return {
+        data: { draft_id: draftId, messages: [] },
+        error: toErrorMessage(payload, 'Failed to fetch chat messages'),
+        status: response.status,
+      };
+    }
+    return {
+      data: {
+        draft_id: typeof payload.draft_id === 'string' ? payload.draft_id : draftId,
+        messages: parseChatMessages(payload.messages),
+      },
+      status: response.status,
+    };
+  } catch {
+    return { data: { draft_id: draftId, messages: [] }, status: 0 };
+  }
+}
+
+export async function postChatMessage(
+  draftId: string,
+  text: string
+): Promise<ApiResponse<PostChatMessageResult>> {
+  try {
+    const response = await fetch(`/api/drafts/${encodeURIComponent(draftId)}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      return {
+        data: { ok: false, draft_id: draftId, applied: '', messages: [] },
+        error: toErrorMessage(payload, 'Failed to send message'),
+        status: response.status,
+      };
+    }
+    return {
+      data: {
+        ok: Boolean(payload.ok),
+        draft_id: typeof payload.draft_id === 'string' ? payload.draft_id : draftId,
+        applied: typeof payload.applied === 'string' ? payload.applied : text,
+        messages: parseChatMessages(payload.messages),
+      },
+      status: response.status,
+    };
+  } catch {
+    return { data: { ok: false, draft_id: draftId, applied: '', messages: [] }, status: 0 };
+  }
 }

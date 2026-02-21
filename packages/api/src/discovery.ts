@@ -1,5 +1,13 @@
 import type { ApiResponse } from './types';
 
+export interface BrowserConnectionStatus {
+  connected: boolean;
+  endpoint: string;
+  browser_info: { browser?: string; webSocketDebuggerUrl?: string };
+  error: string | null;
+  how_to_start: string;
+}
+
 export type BrowserDiscoverySource = 'linkedin' | 'indeed';
 
 export interface BrowserAssistedDiscoveryInput {
@@ -84,4 +92,39 @@ export async function runBrowserAssistedDiscovery(
     },
     status: response.status,
   };
+}
+
+export async function checkBrowserConnection(
+  cdpEndpoint?: string
+): Promise<ApiResponse<BrowserConnectionStatus>> {
+  const params = cdpEndpoint ? `?cdp_endpoint=${encodeURIComponent(cdpEndpoint)}` : '';
+  try {
+    const response = await fetch(`/api/discovery/browser-status${params}`);
+    const payload = await response.json();
+    return {
+      data: {
+        connected: Boolean(payload.connected),
+        endpoint: String(payload.endpoint ?? 'http://host.docker.internal:9222'),
+        browser_info: payload.browser_info ?? {},
+        error: payload.error ?? null,
+        how_to_start: String(payload.how_to_start ?? ''),
+      },
+      status: response.status,
+    };
+  } catch {
+    return {
+      data: {
+        connected: false,
+        endpoint: cdpEndpoint ?? 'http://host.docker.internal:9222',
+        browser_info: {},
+        error: 'Could not reach backend to check browser status.',
+        how_to_start:
+          'macOS/Linux: google-chrome --remote-debugging-port=9222 --no-first-run\n' +
+          'Windows:     chrome.exe --remote-debugging-port=9222\n' +
+          'Docker backend endpoint: http://host.docker.internal:9222\n' +
+          'Host backend endpoint:   http://localhost:9222',
+      },
+      status: 0,
+    };
+  }
 }
