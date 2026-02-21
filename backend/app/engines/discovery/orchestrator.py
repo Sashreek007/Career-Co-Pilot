@@ -5,6 +5,9 @@ from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
+from .adapters.base import JobSourceAdapter
+from .adapters.browser_assisted import IndeedUserAssistedAdapter, LinkedInUserAssistedAdapter
+from .adapters.greenhouse import GreenhouseAdapter
 from .adapters.remotive import RemotiveAdapter
 from .deduplicator import deduplicate_jobs
 from .normalizer import normalize_jobs
@@ -12,6 +15,15 @@ from .query_generator import generate_queries
 from .ranker import apply_ranking
 
 logger = logging.getLogger(__name__)
+
+_SOURCE_ORDER = [
+    "remotive",
+    "greenhouse",
+    "linkedin_browser",
+    "indeed_browser",
+]
+_DEFAULT_SOURCES = ["remotive", "greenhouse"]
+_BROWSER_SOURCES = {"linkedin_browser", "indeed_browser"}
 
 
 def _parse_json_array(raw: Any) -> list[Any]:
@@ -99,10 +111,70 @@ def _insert_jobs(db_conn: sqlite3.Connection, jobs: list[dict[str, Any]]) -> Non
     db_conn.commit()
 
 
+def _resolve_sources(
+    requested_sources: list[str] | None,
+    user_assisted: bool,
+) -> list[str]:
+    candidate = requested_sources or _DEFAULT_SOURCES
+    seen: set[str] = set()
+    resolved: list[str] = []
+    for source in candidate:
+        normalized = str(source).strip().lower()
+        if normalized not in _SOURCE_ORDER:
+            continue
+        if normalized in _BROWSER_SOURCES and not user_assisted:
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        resolved.append(normalized)
+    return resolved or _DEFAULT_SOURCES
+
+
+def _build_adapters(
+    sources: list[str],
+) -> dict[str, JobSourceAdapter]:
+    adapters: dict[str, JobSourceAdapter] = {}
+    for source in sources:
+        if source == "remotive":
+            adapters[source] = RemotiveAdapter()
+        elif source == "greenhouse":
+            adapters[source] = GreenhouseAdapter()
+        elif source == "linkedin_browser":
+            adapters[source] = LinkedInUserAssistedAdapter()
+        elif source == "indeed_browser":
+            adapters[source] = IndeedUserAssistedAdapter()
+    return adapters
+
+
+async def _collect_raw_jobs(
+    adapters: dict[str, JobSourceAdapter],
+    queries: list[str],
+    max_results_per_query: int,
+    browser_query_limit: int,
+) -> list[Any]:
+    collected = []
+    for source, adapter in adapters.items():
+        source_queries = queries
+        if source in _BROWSER_SOURCES:
+            source_queries = queries[: max(browser_query_limit, 1)]
+        for query in source_queries:
+            jobs = await adapter.search(query, max_results=max_results_per_query)
+            collected.extend(jobs)
+    return collected
+
+
 async def run_discovery(
     db_conn: sqlite3.Connection,
     user_profile: dict[str, Any] | None = None,
+    sources: list[str] | None = None,
+    *,
+    user_assisted: bool = False,
+    max_results_per_query: int = 20,
+    browser_query_limit: int = 2,
 ) -> dict[str, Any]:
+    resolved_sources = _resolve_sources(sources, user_assisted=user_assisted)
+    source_label = ",".join(resolved_sources)
     run_id = f"discovery-{uuid4().hex[:10]}"
     started_at = datetime.utcnow().isoformat()
     db_conn.execute(
@@ -110,7 +182,7 @@ async def run_discovery(
         INSERT INTO discovery_runs (id, started_at, source, status)
         VALUES (?, ?, ?, ?)
         """,
-        (run_id, started_at, "remotive", "running"),
+        (run_id, started_at, source_label, "running"),
     )
     db_conn.commit()
 
@@ -145,10 +217,13 @@ async def run_discovery(
             db_conn.commit()
             return {"run_id": run_id, "jobs_found": 0, "jobs_new": 0, "status": "skipped_no_roles"}
 
-        adapter = RemotiveAdapter()
-        raw_jobs = []
-        for query in queries:
-            raw_jobs.extend(await adapter.search(query, max_results=20))
+        adapters = _build_adapters(resolved_sources)
+        raw_jobs = await _collect_raw_jobs(
+            adapters,
+            queries,
+            max_results_per_query=max(max_results_per_query, 1),
+            browser_query_limit=max(browser_query_limit, 1),
+        )
 
         normalized = normalize_jobs(raw_jobs)
         existing_rows = db_conn.execute("SELECT id, title, company FROM jobs").fetchall()
@@ -172,7 +247,13 @@ async def run_discovery(
             (completed_at, len(normalized), len(ranked), "completed", run_id),
         )
         db_conn.commit()
-        return {"run_id": run_id, "jobs_found": len(normalized), "jobs_new": len(ranked), "status": "completed"}
+        return {
+            "run_id": run_id,
+            "jobs_found": len(normalized),
+            "jobs_new": len(ranked),
+            "status": "completed",
+            "sources": resolved_sources,
+        }
     except Exception:
         logger.exception("Discovery run failed")
         completed_at = datetime.utcnow().isoformat()
