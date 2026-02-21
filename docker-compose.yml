@@ -1,6 +1,6 @@
 services:
   browser:
-    image: selenium/standalone-chrome:latest
+    image: selenium/standalone-chromium:latest
     shm_size: 2gb
     ports:
       - "7900:7900"
