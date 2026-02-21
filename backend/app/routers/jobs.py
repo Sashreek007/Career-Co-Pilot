@@ -77,14 +77,41 @@ def _parse_skill_items(raw_skills: Any) -> list[dict[str, Any]]:
     return parsed
 
 
+def _get_active_profile_id(db: sqlite3.Connection) -> str:
+    row = db.execute("SELECT active_profile_id FROM settings WHERE id = 1").fetchone()
+    active_profile_id = str(row[0] or "").strip() if row is not None else ""
+    if not active_profile_id:
+        active_profile_id = "local"
+
+    active_exists = db.execute(
+        "SELECT 1 FROM user_profile WHERE id = ? LIMIT 1",
+        (active_profile_id,),
+    ).fetchone()
+    if active_exists is not None:
+        return active_profile_id
+
+    local_exists = db.execute("SELECT 1 FROM user_profile WHERE id = 'local' LIMIT 1").fetchone()
+    if local_exists is not None:
+        return "local"
+
+    first_profile = db.execute(
+        "SELECT id FROM user_profile ORDER BY updated_at DESC LIMIT 1"
+    ).fetchone()
+    if first_profile is None:
+        return "local"
+    return str(first_profile[0] or "local").strip() or "local"
+
+
 def _load_full_profile(db: sqlite3.Connection) -> dict[str, Any] | None:
     """Load the full user profile row for live re-scoring."""
-    row = db.execute("SELECT * FROM user_profile WHERE id = 'local'").fetchone()
+    profile_id = _get_active_profile_id(db)
+    row = db.execute("SELECT * FROM user_profile WHERE id = ?", (profile_id,)).fetchone()
     return dict(row) if row else None
 
 
 def _extract_profile_skill_forms(db: sqlite3.Connection) -> list[set[str]]:
-    row = db.execute("SELECT skills_json FROM user_profile WHERE id = 'local'").fetchone()
+    profile_id = _get_active_profile_id(db)
+    row = db.execute("SELECT skills_json FROM user_profile WHERE id = ?", (profile_id,)).fetchone()
     if row is None:
         return []
 

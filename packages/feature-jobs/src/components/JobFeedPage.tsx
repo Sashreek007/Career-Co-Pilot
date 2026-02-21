@@ -163,6 +163,7 @@ function loadPersistedDiscoveryRunId(): string {
 
 export function JobFeedPage() {
   const { jobs, selectedJobId, isLoading, lastFetchedAt, fetchJobs, selectJob, markInterested } = useJobsStore();
+  const didBootstrapFetchRef = useRef(false);
   const [locationFilter, setLocationFilter] = useState<LocationFilter>(() => loadPersistedLocationFilter());
   const [useVisibleBrowser, setUseVisibleBrowser] = useState(true);
   const [assistedReview, setAssistedReview] = useState<AssistedReviewState | null>(null);
@@ -221,6 +222,11 @@ export function JobFeedPage() {
   );
 
   useEffect(() => {
+    if (!didBootstrapFetchRef.current) {
+      didBootstrapFetchRef.current = true;
+      void fetchJobs({ silent: jobs.length > 0 });
+      return;
+    }
     const hasJobs = jobs.length > 0;
     const isFresh = lastFetchedAt !== null && Date.now() - lastFetchedAt < 45_000;
     if (!hasJobs) {
