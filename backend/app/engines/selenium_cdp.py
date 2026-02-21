@@ -1,69 +1,10 @@
 import json
+import os
+import platform
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 
 _STATE_DIR = Path(__file__).resolve().parents[2] / "data" / "browser_state"
-
-
-def _normalize_remote_url(endpoint: str) -> str:
-    value = endpoint.strip()
-    if not value:
-        return ""
-    if "://" not in value:
-        value = f"http://{value}"
-    parsed = urlparse(value)
-    host = parsed.hostname
-    if not host:
-        return ""
-
-    scheme = parsed.scheme or "http"
-    if scheme == "ws":
-        scheme = "http"
-    elif scheme == "wss":
-        scheme = "https"
-
-    port = parsed.port
-    if port is None:
-        if scheme == "https":
-            port = 443
-        else:
-            port = 80
-    if port == 9222:
-        port = 4444
-
-    return f"{scheme}://{host}:{port}"
-
-
-def _request_json(
-    url: str,
-    *,
-    method: str = "GET",
-    payload: dict[str, Any] | None = None,
-    timeout_seconds: int = 8,
-) -> dict[str, Any]:
-    body = None
-    headers: dict[str, str] = {}
-    if payload is not None:
-        body = json.dumps(payload).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-
-    request = Request(url, data=body, method=method, headers=headers)
-    with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310
-        raw = response.read().decode("utf-8", errors="ignore")
-    parsed = json.loads(raw) if raw else {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def _chrome_args() -> list[str]:
-    return [
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--no-first-run",
-        "--no-default-browser-check",
-    ]
 
 
 def _state_file(key: str) -> Path:
@@ -95,98 +36,89 @@ def save_browser_storage_state(state: dict[str, Any], key: str = "visible_sessio
         return
 
 
-def bootstrap_selenium_cdp_session(
-    *,
-    cdp_endpoint: str,
-    selenium_remote_url: str = "",
-    timeout_seconds: int = 8,
-) -> tuple[str | None, str | None, str | None]:
+def get_chrome_user_profile_dir() -> str | None:
     """
-    Create a Selenium session and return its CDP websocket endpoint.
+    Return the path to the user's local Chrome profile directory so Playwright
+    can launch with persistent context (saved logins, cookies, sessions).
 
-    Returns: (cdp_ws_endpoint, delete_session_url, error_message)
+    Resolution order:
+    1. CHROME_USER_DATA_DIR env var (explicit override — always respected)
+    2. Platform-specific default locations:
+       - macOS:   ~/Library/Application Support/Google/Chrome
+       - Linux:   ~/.config/google-chrome
+       - Windows: %LOCALAPPDATA%/Google/Chrome/User Data
+
+    Returns None if the directory cannot be found — callers fall back to
+    cookie-injection mode (load_browser_storage_state).
     """
+    # 1. Explicit override
+    env_val = os.environ.get("CHROME_USER_DATA_DIR", "").strip()
+    if env_val:
+        p = Path(env_val).expanduser()
+        if p.is_dir():
+            return str(p)
+        # Env var was set but path doesn't exist — warn and fall through
+        return None
 
-    remote_url = _normalize_remote_url(selenium_remote_url) or _normalize_remote_url(cdp_endpoint)
-    if not remote_url:
-        return None, None, "Could not derive Selenium remote URL."
+    # 2. Platform defaults
+    system = platform.system()
+    if system == "Darwin":
+        candidate = Path.home() / "Library" / "Application Support" / "Google" / "Chrome"
+    elif system == "Linux":
+        candidate = Path.home() / ".config" / "google-chrome"
+    elif system == "Windows":
+        local_app_data = os.environ.get("LOCALAPPDATA", "")
+        if not local_app_data:
+            return None
+        candidate = Path(local_app_data) / "Google" / "Chrome" / "User Data"
+    else:
+        return None
 
-    try:
-        status_payload = _request_json(f"{remote_url}/status", timeout_seconds=timeout_seconds)
-        status_value = status_payload.get("value")
-        if isinstance(status_value, dict):
-            ready = status_value.get("ready")
-            if ready is False:
-                return None, None, "Selenium Grid is not ready."
-    except Exception:
-        # Continue anyway; some servers do not expose /status in the same shape.
-        pass
-
-    payload = {
-        "capabilities": {
-            "alwaysMatch": {
-                "browserName": "chrome",
-                "goog:chromeOptions": {
-                    "args": _chrome_args(),
-                },
-            }
-        }
-    }
-
-    try:
-        created = _request_json(
-            f"{remote_url}/session",
-            method="POST",
-            payload=payload,
-            timeout_seconds=timeout_seconds,
-        )
-    except (HTTPError, URLError, TimeoutError) as exc:
-        return None, None, f"Failed creating Selenium session: {exc}"
-    except Exception as exc:
-        return None, None, str(exc)
-
-    value = created.get("value")
-    if isinstance(value, dict) and value.get("error"):
-        message = str(value.get("message") or value.get("error"))
-        return None, None, message
-
-    session_id = ""
-    capabilities: dict[str, Any] = {}
-    if isinstance(value, dict):
-        session_id = str(value.get("sessionId") or "").strip()
-        caps = value.get("capabilities")
-        capabilities = caps if isinstance(caps, dict) else {}
-    if not session_id:
-        session_id = str(created.get("sessionId") or "").strip()
-
-    if not session_id:
-        return None, None, "Selenium session created without sessionId."
-
-    cdp_ws = str(capabilities.get("se:cdp") or "").strip()
-    if not cdp_ws:
-        chrome_options = capabilities.get("goog:chromeOptions")
-        if isinstance(chrome_options, dict):
-            debugger_address = str(chrome_options.get("debuggerAddress") or "").strip()
-            if debugger_address:
-                base_host = urlparse(remote_url).hostname or "localhost"
-                debugger_host = debugger_address
-                if debugger_host.startswith("localhost:"):
-                    debugger_host = debugger_host.replace("localhost:", f"{base_host}:", 1)
-                cdp_ws = f"http://{debugger_host}"
-
-    delete_url = f"{remote_url}/session/{session_id}"
-    if not cdp_ws:
-        return None, delete_url, "Selenium session missing se:cdp endpoint."
-    return cdp_ws, delete_url, None
+    return str(candidate) if candidate.is_dir() else None
 
 
-def close_selenium_session(delete_session_url: str | None, *, timeout_seconds: int = 5) -> None:
-    url = str(delete_session_url or "").strip()
-    if not url:
-        return
-    try:
-        request = Request(url, method="DELETE")
-        with urlopen(request, timeout=timeout_seconds):  # noqa: S310
-            return
-    except Exception:
-        return
+def get_chrome_executable_path() -> str | None:
+    """
+    Return the path to the Chrome/Chromium binary.
+
+    Resolution order:
+    1. CHROME_EXECUTABLE_PATH env var (explicit override)
+    2. Common platform-specific install locations
+
+    Returns None if not found — Playwright will use its bundled Chromium.
+    """
+    env_val = os.environ.get("CHROME_EXECUTABLE_PATH", "").strip()
+    if env_val:
+        p = Path(env_val).expanduser()
+        if p.is_file():
+            return str(p)
+        return None
+
+    system = platform.system()
+    candidates: list[Path] = []
+
+    if system == "Darwin":
+        candidates = [
+            Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            Path("/Applications/Chromium.app/Contents/MacOS/Chromium"),
+        ]
+    elif system == "Linux":
+        candidates = [
+            Path("/usr/bin/google-chrome"),
+            Path("/usr/bin/google-chrome-stable"),
+            Path("/usr/bin/chromium-browser"),
+            Path("/usr/bin/chromium"),
+            Path("/snap/bin/chromium"),
+        ]
+    elif system == "Windows":
+        prog_files = os.environ.get("PROGRAMFILES", "C:\\Program Files")
+        prog_files_x86 = os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)")
+        candidates = [
+            Path(prog_files) / "Google" / "Chrome" / "Application" / "chrome.exe",
+            Path(prog_files_x86) / "Google" / "Chrome" / "Application" / "chrome.exe",
+        ]
+
+    for c in candidates:
+        if c.is_file():
+            return str(c)
+    return None

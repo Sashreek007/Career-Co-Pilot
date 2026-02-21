@@ -14,8 +14,8 @@ from playwright.async_api import async_playwright
 
 from ...clients.gemini import get_gemini_client
 from ..selenium_cdp import (
-    bootstrap_selenium_cdp_session,
-    close_selenium_session,
+    get_chrome_executable_path,
+    get_chrome_user_profile_dir,
     load_browser_storage_state,
     save_browser_storage_state,
 )
@@ -32,6 +32,53 @@ _PROGRESS_LOCK = Lock()
 _SUBMISSION_PROGRESS: dict[str, dict[str, Any]] = {}
 _OPERATOR_GUIDANCE: dict[str, str] = {}
 
+# --- Chat message store ---
+# Each draft has a list of {"role": "ai"|"user", "text": str, "at": ISO str}
+_CHAT_MESSAGES: dict[str, list[dict[str, str]]] = {}
+_CHAT_LOCK = Lock()
+CHAT_MESSAGE_LIMIT = 200
+
+
+def _chat_push_ai(draft_id: str, text: str) -> None:
+    """Push an AI message into the chat thread for this draft."""
+    normalized = _normalize_space(text)
+    if not normalized:
+        return
+    with _CHAT_LOCK:
+        msgs = _CHAT_MESSAGES.setdefault(draft_id, [])
+        msgs.append({"role": "ai", "text": normalized, "at": _utc_now_iso()})
+        if len(msgs) > CHAT_MESSAGE_LIMIT:
+            del msgs[: len(msgs) - CHAT_MESSAGE_LIMIT]
+
+
+def get_chat_messages(draft_id: str) -> list[dict[str, str]]:
+    """Return the full chat thread for this draft (safe copy)."""
+    with _CHAT_LOCK:
+        return list(_CHAT_MESSAGES.get(draft_id, []))
+
+
+def post_user_chat_message(draft_id: str, text: str) -> str:
+    """
+    Append a user message to the chat thread and apply it as operator guidance.
+    Returns the normalized text.
+    """
+    normalized = _normalize_space(text)[:1200]
+    if not normalized:
+        return ""
+    with _CHAT_LOCK:
+        msgs = _CHAT_MESSAGES.setdefault(draft_id, [])
+        msgs.append({"role": "user", "text": normalized, "at": _utc_now_iso()})
+        if len(msgs) > CHAT_MESSAGE_LIMIT:
+            del msgs[: len(msgs) - CHAT_MESSAGE_LIMIT]
+    # Also feed it into the operator guidance so the running agent picks it up
+    set_submission_guidance(draft_id, normalized)
+    return normalized
+
+
+def clear_chat_messages(draft_id: str) -> None:
+    with _CHAT_LOCK:
+        _CHAT_MESSAGES.pop(draft_id, None)
+
 
 class RateLimitError(ValueError):
     """Raised when daily submission cap is reached."""
@@ -46,6 +93,7 @@ def _utc_now_iso() -> str:
 
 
 def _progress_start(draft_id: str, *, mode: str) -> None:
+    clear_chat_messages(draft_id)
     with _PROGRESS_LOCK:
         _SUBMISSION_PROGRESS[draft_id] = {
             "draft_id": draft_id,
@@ -57,6 +105,7 @@ def _progress_start(draft_id: str, *, mode: str) -> None:
             "events": [],
             "error": None,
         }
+    _chat_push_ai(draft_id, f"Starting AI-assisted application ({mode} mode). I'll let you know when I need input.")
 
 
 def _progress_event(draft_id: str, message: str, *, level: str = "info") -> None:
@@ -653,11 +702,7 @@ def _cdp_endpoint() -> str:
     value = os.environ.get("APPLICATION_CDP_ENDPOINT", "").strip()
     if value:
         return value
-    return "http://browser:9222"
-
-
-def _selenium_remote_url() -> str:
-    return os.environ.get("APPLICATION_SELENIUM_REMOTE_URL", "").strip()
+    return "http://host.docker.internal:9222"
 
 
 def _normalize_manual_pause_seconds(value: int | None) -> int:
@@ -711,6 +756,21 @@ async def _fill_known_fields(
             logger.warning("Skipping unfillable field label=%s", label)
 
 
+def _site_key_from_url(url: str) -> str:
+    """Derive a per-site cookie state key from the job URL so sessions stay separate."""
+    if "linkedin.com" in url:
+        return "linkedin"
+    if "indeed.com" in url:
+        return "indeed"
+    if "greenhouse.io" in url:
+        return "greenhouse"
+    if "lever.co" in url:
+        return "lever"
+    if "workday.com" in url:
+        return "workday"
+    return "visible_session"
+
+
 async def _click_submit_button(page) -> None:
     submit_btn = page.get_by_role("button", name=re.compile("submit|apply|send", re.IGNORECASE)).first
     if await submit_btn.count() == 0:
@@ -744,7 +804,6 @@ async def _run_submission(
     close_page = True
     close_context = True
     close_browser = True
-    selenium_session_delete_url: str | None = None
     SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
     screenshot_path = SCREENSHOT_DIR / f"{draft_id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.png"
     live_screenshot_path = SCREENSHOT_DIR / f"{draft_id}-live.png"
@@ -754,15 +813,18 @@ async def _run_submission(
     set_submission_guidance(draft_id, "")
     _progress_event(draft_id, f"Starting operator in {run_mode} mode.")
 
+    # Derive site-specific state key so linkedin/indeed/greenhouse cookies stay separate
+    _site_state_key = _site_key_from_url(job_url)
+
     async def _restore_visible_state() -> None:
         if context is None:
             return
-        state = load_browser_storage_state("visible_session")
+        state = load_browser_storage_state(_site_state_key)
         cookies = state.get("cookies")
         if isinstance(cookies, list) and cookies:
             try:
                 await context.add_cookies(cookies)
-                _progress_event(draft_id, "Loaded persisted browser login state.")
+                _progress_event(draft_id, f"Loaded persisted {_site_state_key} login state.")
             except Exception:
                 logger.debug("Could not restore persisted browser state", exc_info=True)
 
@@ -772,8 +834,8 @@ async def _run_submission(
         try:
             cookies = await context.cookies()
             if isinstance(cookies, list):
-                save_browser_storage_state({"cookies": cookies}, "visible_session")
-                _progress_event(draft_id, "Persisted browser login cookies.")
+                save_browser_storage_state({"cookies": cookies}, _site_state_key)
+                _progress_event(draft_id, f"Persisted {_site_state_key} login cookies.")
         except Exception:
             logger.debug("Could not persist visible browser state", exc_info=True)
 
@@ -791,35 +853,18 @@ async def _run_submission(
         playwright = await async_playwright().start()
         if use_visible_browser:
             cdp_endpoint = _cdp_endpoint()
-            _progress_event(draft_id, f"Connecting to visible browser via CDP ({cdp_endpoint}).")
+            _progress_event(draft_id, f"Connecting to your Chrome browser via CDP ({cdp_endpoint}).")
             try:
                 browser = await playwright.chromium.connect_over_cdp(cdp_endpoint)
-            except Exception as direct_exc:
-                _progress_event(
-                    draft_id,
-                    "Direct CDP attach failed. Attempting Selenium visible session bootstrap.",
-                    level="warning",
-                )
-                fallback_endpoint, delete_url, fallback_error = bootstrap_selenium_cdp_session(
-                    cdp_endpoint=cdp_endpoint,
-                    selenium_remote_url=_selenium_remote_url(),
-                )
-                if fallback_endpoint:
-                    selenium_session_delete_url = delete_url
-                    cdp_endpoint = fallback_endpoint
-                    _progress_event(draft_id, f"Attached Selenium CDP endpoint ({cdp_endpoint}).")
-                    run_mode = "visible_browser_selenium"
-                    _progress_mode(draft_id, run_mode)
-                    browser = await playwright.chromium.connect_over_cdp(cdp_endpoint)
-                else:
-                    detail = f" {fallback_error}" if fallback_error else ""
-                    raise BrowserUnavailableError(
-                        "Could not connect to the visible browser session. "
-                        "Make sure the Docker browser service is running and open http://localhost:7900 "
-                        "to view/intervene. If you want to use host Chrome instead, set "
-                        "APPLICATION_CDP_ENDPOINT to your host debugging endpoint."
-                        f"{detail}"
-                    ) from direct_exc
+            except Exception as cdp_exc:
+                raise BrowserUnavailableError(
+                    f"Could not connect to your Chrome browser at {cdp_endpoint}. "
+                    "Start Chrome with remote debugging enabled:\n"
+                    "  macOS/Linux: google-chrome --remote-debugging-port=9222 --no-first-run\n"
+                    "  Windows:     chrome.exe --remote-debugging-port=9222\n"
+                    "If backend runs in Docker, set APPLICATION_CDP_ENDPOINT=http://host.docker.internal:9222. "
+                    "If backend runs on your host directly, set APPLICATION_CDP_ENDPOINT=http://localhost:9222."
+                ) from cdp_exc
 
             close_browser = False
             if browser.contexts:
@@ -834,8 +879,33 @@ async def _run_submission(
             page = await context.new_page()
             close_page = False
         else:
+            user_data_dir = get_chrome_user_profile_dir()
+            executable = get_chrome_executable_path()
             try:
-                browser = await playwright.chromium.launch(headless=_should_launch_headless())
+                if user_data_dir:
+                    # Launch with user's real Chrome profile — inherits all saved logins/sessions
+                    _progress_event(draft_id, f"Launching Chrome with user profile from {user_data_dir}.")
+                    launch_kwargs: dict[str, Any] = {
+                        "headless": _should_launch_headless(),
+                        "args": ["--no-first-run", "--no-default-browser-check", "--no-sandbox"],
+                    }
+                    if executable:
+                        launch_kwargs["executable_path"] = executable
+                    context = await playwright.chromium.launch_persistent_context(
+                        user_data_dir,
+                        **launch_kwargs,
+                    )
+                    browser = None
+                    close_browser = False
+                    close_context = True
+                else:
+                    # No Chrome profile found — use cookie injection fallback
+                    _progress_event(draft_id, "No Chrome profile found; using managed Chromium with saved cookies.")
+                    browser = await playwright.chromium.launch(headless=_should_launch_headless())
+                    context = await browser.new_context()
+                    await _restore_visible_state()
+                    close_browser = True
+                    close_context = True
             except Exception as exc:
                 message = str(exc)
                 if "Executable doesn't exist" in message:
@@ -848,10 +918,7 @@ async def _run_submission(
                         "Set APPLICATION_BROWSER_HEADLESS=true."
                     ) from exc
                 raise
-            context = await browser.new_context()
             page = await context.new_page()
-            close_browser = True
-            close_context = True
             close_page = True
 
         page.set_default_timeout(_action_timeout_ms())
@@ -897,6 +964,7 @@ async def _run_submission(
             _progress_event(draft_id, "Attempting final submit click.")
             await _click_submit_button(page)
             _progress_finish(draft_id, status="submitted")
+            _chat_push_ai(draft_id, "✅ Application submitted successfully!")
             return {
                 "status": "submitted",
                 "screenshot_path": str(screenshot_path),
@@ -904,6 +972,12 @@ async def _run_submission(
             }
 
         _progress_finish(draft_id, status="ready_for_final_approval")
+        _chat_push_ai(
+            draft_id,
+            "✅ I've finished filling the form. Please review the screenshot above — "
+            "check that all fields look correct. When you're ready, click **Final Submit** "
+            "to submit the application, or type here if anything needs fixing."
+        )
         return {
             "status": "ready_for_final_approval",
             "screenshot_path": str(screenshot_path),
@@ -912,27 +986,28 @@ async def _run_submission(
     except asyncio.TimeoutError as exc:
         _progress_event(draft_id, "Submission timed out.", level="error")
         _progress_finish(draft_id, status="failed", error="Timed out loading or operating on the job page")
+        _chat_push_ai(draft_id, "❌ Timed out while loading or operating on the job page. Please try again.")
         raise ValueError("Timed out loading or operating on the job page") from exc
     except BrowserUnavailableError as exc:
         _progress_event(draft_id, str(exc), level="error")
         _progress_finish(draft_id, status="failed", error=str(exc))
+        _chat_push_ai(draft_id, f"❌ Browser connection failed: {exc}")
         raise
     except Exception:
         _progress_event(draft_id, "Submission engine failed.", level="error")
         _progress_finish(draft_id, status="failed", error="Submission engine failed")
+        _chat_push_ai(draft_id, "❌ Something went wrong during the application process. Check the agent log for details.")
         logger.exception("Submission engine failed for draft_id=%s", draft_id)
         raise
     finally:
-        if use_visible_browser:
-            await _persist_visible_state()
+        # Always persist cookies so next session reuses the login state
+        await _persist_visible_state()
         if page is not None and close_page:
             await page.close()
         if context is not None and close_context:
             await context.close()
         if browser is not None and close_browser:
             await browser.close()
-        if selenium_session_delete_url:
-            close_selenium_session(selenium_session_delete_url)
         if playwright is not None:
             await playwright.stop()
 

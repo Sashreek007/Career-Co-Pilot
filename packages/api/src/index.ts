@@ -12,15 +12,20 @@ export {
   runAssistedConfirmSubmit,
   getAssistedProgress,
   sendAssistedGuidance,
+  getChatMessages,
+  postChatMessage,
 } from './drafts';
 export type {
   AssistedProgressResult,
   AssistedRunOptions,
   AssistedProgressEvent,
   AssistedGuidanceResult,
+  ChatMessage,
+  ChatThreadResult,
+  PostChatMessageResult,
 } from './drafts';
-export { runBrowserAssistedDiscovery } from './discovery';
-export type { BrowserAssistedDiscoveryInput, BrowserAssistedDiscoveryResult, BrowserDiscoverySource } from './discovery';
+export { runBrowserAssistedDiscovery, checkBrowserConnection } from './discovery';
+export type { BrowserAssistedDiscoveryInput, BrowserAssistedDiscoveryResult, BrowserDiscoverySource, BrowserConnectionStatus } from './discovery';
 export { getInterviewKit, getInterviewKits } from './interviews';
 export {
   getProfiles,

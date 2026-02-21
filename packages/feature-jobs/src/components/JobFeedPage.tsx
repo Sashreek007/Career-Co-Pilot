@@ -7,19 +7,23 @@ import { JobDetail } from './JobDetail';
 import {
   type AssistedProgressEvent,
   type AssistedProgressResult,
+  type BrowserConnectionStatus,
   type BrowserDiscoverySource,
+  type ChatMessage,
   approveDraft,
+  checkBrowserConnection,
+  getChatMessages,
   getAssistedProgress,
   importExternalJob,
+  postChatMessage,
   prepareDraft,
   runBrowserAssistedDiscovery,
   runAssistedConfirmSubmit,
   runAssistedFill,
-  sendAssistedGuidance,
 } from '@career-copilot/api';
 
 type LocationFilter = 'canada' | 'us' | 'remote' | 'all';
-type ActivityTab = 'browser' | 'agent';
+type ActivityTab = 'browser' | 'agent' | 'chat';
 
 const CANADA_HINTS = [
   'canada',
@@ -54,7 +58,6 @@ const US_HINTS = [
   'chicago',
   'boston',
 ];
-const VISUAL_BROWSER_URL = 'http://localhost:7900/?autoconnect=1&resize=scale';
 
 interface AssistedReviewState {
   draftId: string;
@@ -113,8 +116,6 @@ export function JobFeedPage() {
   const [runningDraftId, setRunningDraftId] = useState<string | null>(null);
   const [runningJobUrl, setRunningJobUrl] = useState<string | null>(null);
   const [runningProgress, setRunningProgress] = useState<AssistedProgressResult | null>(null);
-  const [guidanceText, setGuidanceText] = useState('');
-  const [isSendingGuidance, setIsSendingGuidance] = useState(false);
   const [runningTab, setRunningTab] = useState<ActivityTab>('browser');
   const [reviewTab, setReviewTab] = useState<ActivityTab>('browser');
   const progressTimerRef = useRef<number | null>(null);
@@ -123,6 +124,12 @@ export function JobFeedPage() {
   const [startApplyJobId, setStartApplyJobId] = useState<string | null>(null);
   const [showImportModal, setShowImportModal] = useState(false);
   const [showDiscoveryModal, setShowDiscoveryModal] = useState(false);
+  const [browserStatus, setBrowserStatus] = useState<BrowserConnectionStatus | null>(null);
+  const [isCheckingBrowser, setIsCheckingBrowser] = useState(false);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [isSendingChat, setIsSendingChat] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
   const [importForm, setImportForm] = useState<ImportFormState>({
     sourceUrl: '',
     title: '',
@@ -163,14 +170,23 @@ export function JobFeedPage() {
   };
 
   const pollProgressOnce = async (draftId: string) => {
-    const progress = await getAssistedProgress(draftId);
+    const [progress, chat] = await Promise.all([
+      getAssistedProgress(draftId),
+      getChatMessages(draftId),
+    ]);
     if (!progress.error) {
       setRunningProgress(progress.data);
+    }
+    if (!chat.error) {
+      setChatMessages(chat.data.messages);
+      // Auto-scroll to bottom when new messages arrive
+      setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
     }
   };
 
   const startProgressPolling = (draftId: string) => {
     stopProgressPolling();
+    setChatMessages([]);
     void pollProgressOnce(draftId);
     progressTimerRef.current = window.setInterval(() => {
       void pollProgressOnce(draftId);
@@ -178,6 +194,22 @@ export function JobFeedPage() {
   };
 
   useEffect(() => () => stopProgressPolling(), []);
+
+  const handleSendChat = async () => {
+    const draftId = runningDraftId;
+    const text = chatInput.trim();
+    if (!draftId || !text || isSendingChat) return;
+    setIsSendingChat(true);
+    setChatInput('');
+    const result = await postChatMessage(draftId, text);
+    setIsSendingChat(false);
+    if (result.error) {
+      pushNotice(result.error, 'error');
+      return;
+    }
+    setChatMessages(result.data.messages);
+    setTimeout(() => chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
+  };
 
   const pushNotice = (message: string, tone: NoticeState['tone'] = 'info') => {
     if (noticeTimerRef.current !== null) {
@@ -224,7 +256,6 @@ export function JobFeedPage() {
 
     setRunningTab('browser');
     setRunningProgress(null);
-    setGuidanceText('');
     setRunningDraftId(prepared.data.id);
     setRunningJobUrl(targetJob.sourceUrl || null);
     setIsRunningFill(true);
@@ -320,6 +351,13 @@ export function JobFeedPage() {
     pushNotice('External job imported. You can now run Assisted Apply on it.', 'success');
   };
 
+  const handleCheckBrowser = async () => {
+    setIsCheckingBrowser(true);
+    const result = await checkBrowserConnection();
+    setBrowserStatus(result.data);
+    setIsCheckingBrowser(false);
+  };
+
   const openDiscoveryModal = () => {
     const defaultQuery =
       locationFilter === 'canada'
@@ -329,6 +367,8 @@ export function JobFeedPage() {
           : 'software engineer remote';
     setDiscoveryForm({ source: 'linkedin', query: defaultQuery });
     setShowDiscoveryModal(true);
+    // Auto-check browser connection when modal opens
+    void handleCheckBrowser();
   };
 
   const handleBrowserAssistedDiscovery = async () => {
@@ -360,22 +400,6 @@ export function JobFeedPage() {
       `Discovery complete (${result.data.source}): ${result.data.jobs_new} new jobs imported from ${result.data.jobs_found} found.`,
       'success'
     );
-  };
-
-  const handleSendGuidance = async () => {
-    const draftId = runningDraftId;
-    const message = guidanceText.trim();
-    if (!draftId || !message || isSendingGuidance) return;
-    setIsSendingGuidance(true);
-    const result = await sendAssistedGuidance(draftId, message);
-    setIsSendingGuidance(false);
-    if (result.error) {
-      pushNotice(result.error, 'error');
-      return;
-    }
-    setGuidanceText('');
-    pushNotice('Agent guidance applied.', 'success');
-    await pollProgressOnce(draftId);
   };
 
   const runningScreenshotUrl = withCacheBust(
@@ -542,6 +566,53 @@ export function JobFeedPage() {
                 Search in a user-assisted browser session and import matched jobs.
               </p>
             </div>
+
+            {/* Browser connection status */}
+            <div className="border-b border-zinc-800 px-5 py-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  {isCheckingBrowser ? (
+                    <span className="h-2 w-2 animate-pulse rounded-full bg-zinc-500" />
+                  ) : browserStatus?.connected ? (
+                    <span className="h-2 w-2 rounded-full bg-emerald-400" />
+                  ) : (
+                    <span className="h-2 w-2 rounded-full bg-red-500" />
+                  )}
+                  <span className="text-xs text-zinc-300">
+                    {isCheckingBrowser
+                      ? 'Checking Chrome connection…'
+                      : browserStatus?.connected
+                        ? `Chrome connected${browserStatus.browser_info?.browser ? ` — ${browserStatus.browser_info.browser}` : ''}`
+                        : browserStatus
+                          ? 'Chrome not detected'
+                          : 'Browser status unknown'}
+                  </span>
+                </div>
+                <button
+                  onClick={() => void handleCheckBrowser()}
+                  disabled={isCheckingBrowser}
+                  className="rounded-md bg-zinc-800 px-2.5 py-1 text-[11px] font-medium text-zinc-300 hover:bg-zinc-700 disabled:opacity-50"
+                >
+                  {isCheckingBrowser ? 'Checking…' : 'Re-check'}
+                </button>
+              </div>
+
+              {/* Show setup instructions when not connected */}
+              {!isCheckingBrowser && browserStatus && !browserStatus.connected && (
+                <div className="mt-3 rounded-md border border-amber-700/40 bg-amber-950/30 px-3 py-2.5">
+                  <p className="mb-1.5 text-xs font-medium text-amber-200">
+                    Start Chrome with remote debugging to connect:
+                  </p>
+                  <pre className="whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-amber-300">
+                    {browserStatus.how_to_start}
+                  </pre>
+                  {browserStatus.error && (
+                    <p className="mt-1.5 text-[11px] text-amber-400/70">{browserStatus.error}</p>
+                  )}
+                </div>
+              )}
+            </div>
+
             <div className="space-y-4 px-5 py-4">
               <label className="block">
                 <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
@@ -707,19 +778,13 @@ export function JobFeedPage() {
               <h3 className="text-base font-semibold text-zinc-100">AI Browser Operation In Progress</h3>
               <p className="mt-1 text-sm text-zinc-400">
                 {useVisibleBrowser
-                  ? 'Agent is connected to the visual browser session. You can intervene directly in that browser window.'
+                  ? 'Agent is connected to your local Chrome via CDP. Intervene directly in that Chrome window at any time.'
                   : 'Agent is running in managed browser mode. Watch screenshots and operator logs below.'}
               </p>
               {useVisibleBrowser && (
-                <div className="mt-2">
-                  <a
-                    href={VISUAL_BROWSER_URL}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center rounded-md bg-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-100 hover:bg-zinc-600"
-                  >
-                    Open Visual Browser
-                  </a>
+                <div className="mt-2 rounded-md border border-zinc-700 bg-zinc-950/70 px-3 py-2 text-xs text-zinc-300">
+                  Keep your Chrome window open with remote debugging on port 9222.
+                  The agent will operate that same session live.
                 </div>
               )}
             </div>
@@ -745,6 +810,24 @@ export function JobFeedPage() {
               >
                 Agent Log
               </button>
+              <button
+                onClick={() => setRunningTab('chat')}
+                className={`relative rounded-md px-3 py-1.5 text-xs font-medium ${
+                  runningTab === 'chat'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                }`}
+              >
+                Chat
+                {chatMessages.length > 0 && runningTab !== 'chat' && (
+                  <span className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-500 text-[9px] text-white">
+                    {chatMessages.filter((m) => m.role === 'ai').length}
+                  </span>
+                )}
+              </button>
+              <span className="ml-auto text-[11px] text-zinc-500">
+                {runningProgress?.status ?? 'running'}
+              </span>
             </div>
 
             <div className="px-5 py-4">
@@ -770,7 +853,7 @@ export function JobFeedPage() {
                     </div>
                   )}
                 </div>
-              ) : (
+              ) : runningTab === 'agent' ? (
                 <div className="max-h-[52vh] overflow-auto rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2">
                   {(runningProgress?.events ?? []).length === 0 ? (
                     <p className="py-3 text-xs text-zinc-500">Waiting for agent events...</p>
@@ -787,33 +870,69 @@ export function JobFeedPage() {
                     </div>
                   )}
                 </div>
-              )}
-            </div>
+              ) : (
+                /* Chat panel */
+                <div className="flex flex-col" style={{ height: '52vh' }}>
+                  {/* Message thread */}
+                  <div className="flex-1 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950 p-3 space-y-3">
+                    {chatMessages.length === 0 ? (
+                      <p className="py-4 text-center text-xs text-zinc-500">
+                        The AI will send messages here when it needs your input.
+                      </p>
+                    ) : (
+                      chatMessages.map((msg, idx) => (
+                        <div
+                          key={`${msg.at}-${idx}`}
+                          className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                        >
+                          <div
+                            className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed ${
+                              msg.role === 'user'
+                                ? 'rounded-br-sm bg-blue-600 text-white'
+                                : 'rounded-bl-sm border border-zinc-700 bg-zinc-800 text-zinc-100'
+                            }`}
+                          >
+                            {msg.role === 'ai' && (
+                              <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-zinc-400">
+                                AI Agent
+                              </p>
+                            )}
+                            <p className="whitespace-pre-wrap">{msg.text}</p>
+                            <p className={`mt-1 text-[10px] ${msg.role === 'user' ? 'text-blue-200' : 'text-zinc-500'}`}>
+                              {new Date(msg.at).toLocaleTimeString()}
+                            </p>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                    <div ref={chatEndRef} />
+                  </div>
 
-            <div className="border-t border-zinc-800 px-5 py-3">
-              <p className="mb-2 text-xs text-zinc-400">
-                Draft: {runningDraftId} • Status: {runningProgress?.status ?? 'running'}
-              </p>
-              <div className="space-y-2">
-                <label className="block text-[11px] font-medium uppercase tracking-wide text-zinc-500">
-                  Guide Agent
-                </label>
-                <div className="flex items-start gap-2">
-                  <textarea
-                    value={guidanceText}
-                    onChange={(event) => setGuidanceText(event.target.value)}
-                    placeholder="Example: skip optional survey questions and continue to review page."
-                    className="min-h-16 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-xs text-zinc-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                  <button
-                    onClick={() => void handleSendGuidance()}
-                    disabled={isSendingGuidance || !guidanceText.trim()}
-                    className="rounded-md bg-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-100 hover:bg-zinc-600 disabled:cursor-not-allowed disabled:opacity-70"
-                  >
-                    {isSendingGuidance ? 'Sending…' : 'Send'}
-                  </button>
+                  {/* Input bar */}
+                  <div className="mt-2 flex items-end gap-2">
+                    <textarea
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          void handleSendChat();
+                        }
+                      }}
+                      placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+                      rows={2}
+                      className="flex-1 resize-none rounded-xl border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    <button
+                      onClick={() => void handleSendChat()}
+                      disabled={isSendingChat || !chatInput.trim()}
+                      className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isSendingChat ? '…' : 'Send'}
+                    </button>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           </div>
         </div>
@@ -850,6 +969,21 @@ export function JobFeedPage() {
               >
                 Agent Log
               </button>
+              <button
+                onClick={() => setReviewTab('chat')}
+                className={`relative rounded-md px-3 py-1.5 text-xs font-medium ${
+                  reviewTab === 'chat'
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                }`}
+              >
+                Chat
+                {chatMessages.length > 0 && reviewTab !== 'chat' && (
+                  <span className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-500 text-[9px] text-white">
+                    {chatMessages.filter((m) => m.role === 'ai').length}
+                  </span>
+                )}
+              </button>
             </div>
 
             <div className="space-y-3 px-5 py-4">
@@ -882,7 +1016,7 @@ export function JobFeedPage() {
                     )}
                   </div>
                 )
-              ) : (
+              ) : reviewTab === 'agent' ? (
                 <div className="max-h-[52vh] overflow-auto rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2">
                   {assistedReview.events.length === 0 ? (
                     <p className="py-3 text-xs text-zinc-500">No agent events captured.</p>
@@ -897,6 +1031,38 @@ export function JobFeedPage() {
                         </div>
                       ))}
                     </div>
+                  )}
+                </div>
+              ) : (
+                /* Chat history (read-only in review — fill is done) */
+                <div className="max-h-[52vh] overflow-auto rounded-lg border border-zinc-800 bg-zinc-950 p-3 space-y-3">
+                  {chatMessages.length === 0 ? (
+                    <p className="py-4 text-center text-xs text-zinc-500">No chat messages from this session.</p>
+                  ) : (
+                    chatMessages.map((msg, idx) => (
+                      <div
+                        key={`${msg.at}-${idx}`}
+                        className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                      >
+                        <div
+                          className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed ${
+                            msg.role === 'user'
+                              ? 'rounded-br-sm bg-blue-600 text-white'
+                              : 'rounded-bl-sm border border-zinc-700 bg-zinc-800 text-zinc-100'
+                          }`}
+                        >
+                          {msg.role === 'ai' && (
+                            <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-zinc-400">
+                              AI Agent
+                            </p>
+                          )}
+                          <p className="whitespace-pre-wrap">{msg.text}</p>
+                          <p className={`mt-1 text-[10px] ${msg.role === 'user' ? 'text-blue-200' : 'text-zinc-500'}`}>
+                            {new Date(msg.at).toLocaleTimeString()}
+                          </p>
+                        </div>
+                      </div>
+                    ))
                   )}
                 </div>
               )}

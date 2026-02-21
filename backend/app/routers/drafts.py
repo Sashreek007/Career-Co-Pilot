@@ -16,7 +16,9 @@ from ..engines.applications.submission_engine import (
     BrowserUnavailableError,
     RateLimitError,
     confirm_submit_application,
+    get_chat_messages,
     get_submission_progress,
+    post_user_chat_message,
     set_submission_guidance,
     submit_application,
 )
@@ -296,3 +298,37 @@ def set_draft_guidance(
     _get_draft_or_404(draft_id, db)
     applied = set_submission_guidance(draft_id, payload.message)
     return {"ok": True, "draft_id": draft_id, "applied_guidance": applied}
+
+
+class ChatMessageRequest(BaseModel):
+    text: str
+
+
+@router.get("/{draft_id}/messages")
+def get_draft_messages(
+    draft_id: str,
+    db: sqlite3.Connection = Depends(db_conn),
+):
+    """Return the full AI+user chat thread for this draft."""
+    _get_draft_or_404(draft_id, db)
+    messages = get_chat_messages(draft_id)
+    return {"draft_id": draft_id, "messages": messages}
+
+
+@router.post("/{draft_id}/messages")
+def post_draft_message(
+    draft_id: str,
+    payload: ChatMessageRequest,
+    db: sqlite3.Connection = Depends(db_conn),
+):
+    """
+    Post a user message into the chat thread.
+    Also feeds it to the running agent as operator guidance so it can respond.
+    """
+    _get_draft_or_404(draft_id, db)
+    text = str(payload.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Message text is required")
+    applied = post_user_chat_message(draft_id, text)
+    messages = get_chat_messages(draft_id)
+    return {"ok": True, "draft_id": draft_id, "applied": applied, "messages": messages}
