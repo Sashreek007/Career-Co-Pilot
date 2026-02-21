@@ -7,6 +7,7 @@ import { JobDetail } from './JobDetail';
 import {
   type AssistedProgressEvent,
   type AssistedProgressResult,
+  type BrowserDiscoverySource,
   approveDraft,
   getAssistedProgress,
   importExternalJob,
@@ -64,6 +65,23 @@ interface AssistedReviewState {
   events: AssistedProgressEvent[];
 }
 
+interface NoticeState {
+  tone: 'info' | 'success' | 'error';
+  message: string;
+}
+
+interface ImportFormState {
+  sourceUrl: string;
+  title: string;
+  company: string;
+  location: string;
+}
+
+interface DiscoveryFormState {
+  source: BrowserDiscoverySource;
+  query: string;
+}
+
 function includesAny(haystack: string, values: string[]): boolean {
   return values.some((value) => haystack.includes(value));
 }
@@ -100,12 +118,31 @@ export function JobFeedPage() {
   const [runningTab, setRunningTab] = useState<ActivityTab>('browser');
   const [reviewTab, setReviewTab] = useState<ActivityTab>('browser');
   const progressTimerRef = useRef<number | null>(null);
+  const noticeTimerRef = useRef<number | null>(null);
+  const [notice, setNotice] = useState<NoticeState | null>(null);
+  const [startApplyJobId, setStartApplyJobId] = useState<string | null>(null);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [showDiscoveryModal, setShowDiscoveryModal] = useState(false);
+  const [importForm, setImportForm] = useState<ImportFormState>({
+    sourceUrl: '',
+    title: '',
+    company: '',
+    location: 'Remote',
+  });
+  const [discoveryForm, setDiscoveryForm] = useState<DiscoveryFormState>({
+    source: 'linkedin',
+    query: '',
+  });
 
   const filteredJobs = useMemo(
     () => jobs.filter((job) => matchesLocationFilter(job, locationFilter)),
     [jobs, locationFilter]
   );
   const selectedJob = filteredJobs.find((j) => j.id === selectedJobId) ?? null;
+  const startApplyJob = useMemo(
+    () => (startApplyJobId ? jobs.find((job) => job.id === startApplyJobId) ?? null : null),
+    [jobs, startApplyJobId]
+  );
 
   useEffect(() => {
     fetchJobs();
@@ -142,6 +179,26 @@ export function JobFeedPage() {
 
   useEffect(() => () => stopProgressPolling(), []);
 
+  const pushNotice = (message: string, tone: NoticeState['tone'] = 'info') => {
+    if (noticeTimerRef.current !== null) {
+      window.clearTimeout(noticeTimerRef.current);
+    }
+    setNotice({ tone, message });
+    noticeTimerRef.current = window.setTimeout(() => {
+      setNotice(null);
+      noticeTimerRef.current = null;
+    }, 4200);
+  };
+
+  useEffect(
+    () => () => {
+      if (noticeTimerRef.current !== null) {
+        window.clearTimeout(noticeTimerRef.current);
+      }
+    },
+    []
+  );
+
   const handlePrepareResume = (jobId: string) => {
     console.log('[stub] Prepare resume for job', jobId);
   };
@@ -149,35 +206,19 @@ export function JobFeedPage() {
   const runAssistedApplicationFlow = async (jobId: string) => {
     const targetJob = jobs.find((job) => job.id === jobId);
     if (!targetJob) {
-      window.alert('Job not found.');
+      pushNotice('Job not found.', 'error');
       return;
     }
 
-    const startAssistedFlow = window.confirm(
-      [
-        'AI-Assisted Apply runs in user-assisted mode.',
-        useVisibleBrowser
-          ? 'Visible Browser mode is ON: the agent will operate the Docker visual browser session.'
-          : 'Visible Browser mode is OFF: agent runs in container browser with screenshots/logs.',
-        'Final submit still requires explicit confirmation.',
-        '',
-        `Source: ${targetJob.source}`,
-        `URL: ${targetJob.sourceUrl || 'not available'}`,
-        '',
-        'Continue?',
-      ].join('\n')
-    );
-    if (!startAssistedFlow) return;
-
     const prepared = await prepareDraft(jobId);
     if (prepared.error || !prepared.data.id) {
-      window.alert(prepared.error ?? 'Failed to prepare draft.');
+      pushNotice(prepared.error ?? 'Failed to prepare draft.', 'error');
       return;
     }
 
     const approved = await approveDraft(prepared.data.id);
     if (approved.error) {
-      window.alert(approved.error);
+      pushNotice(approved.error, 'error');
       return;
     }
 
@@ -206,7 +247,7 @@ export function JobFeedPage() {
     setRunningJobUrl(null);
 
     if (fillResult.error) {
-      window.alert(fillResult.error);
+      pushNotice(fillResult.error, 'error');
       return;
     }
 
@@ -229,73 +270,77 @@ export function JobFeedPage() {
     });
     setIsSubmittingFinal(false);
     if (submitted.error) {
-      window.alert(submitted.error);
+      pushNotice(submitted.error, 'error');
       return;
     }
     setAssistedReview(null);
     await fetchJobs();
-    window.alert(`Application submitted with status: ${submitted.data.status}`);
+    pushNotice(`Application submitted with status: ${submitted.data.status}`, 'success');
   };
 
   const handleReviewLater = () => {
     if (!assistedReview) return;
-    window.alert(`Draft ${assistedReview.draftId} is approved and ready for final submit later.`);
+    pushNotice(`Draft ${assistedReview.draftId} is approved and ready for final submit later.`, 'info');
     setAssistedReview(null);
   };
 
   const handlePrepareApplication = (jobId: string) => {
+    setStartApplyJobId(jobId);
+  };
+
+  const handleConfirmStartApply = () => {
+    if (!startApplyJobId) return;
+    const jobId = startApplyJobId;
+    setStartApplyJobId(null);
     void runAssistedApplicationFlow(jobId);
   };
 
   const handleImportExternalJob = async () => {
-    const sourceUrl = window.prompt(
-      [
-        'Paste a direct job posting URL.',
-        'LinkedIn tip: use a /jobs/view/<job-id>/ link when possible.',
-      ].join('\n')
-    );
-    if (!sourceUrl) return;
-
-    const title = window.prompt('Job title (optional, leave blank to auto-detect)') ?? '';
-    const company = window.prompt('Company name (optional, leave blank to auto-detect)') ?? '';
-    const location = window.prompt('Location (optional)', 'Remote') ?? 'Remote';
-
-    const imported = await importExternalJob({
-      sourceUrl,
-      title: title.trim() || undefined,
-      company: company.trim() || undefined,
-      location,
-    });
-    if (imported.error || !imported.data) {
-      window.alert(imported.error ?? 'Failed to import external job.');
+    const sourceUrl = importForm.sourceUrl.trim();
+    if (!sourceUrl) {
+      pushNotice('Job URL is required.', 'error');
       return;
     }
 
+    const imported = await importExternalJob({
+      sourceUrl,
+      title: importForm.title.trim() || undefined,
+      company: importForm.company.trim() || undefined,
+      location: importForm.location.trim() || 'Remote',
+    });
+    if (imported.error || !imported.data) {
+      pushNotice(imported.error ?? 'Failed to import external job.', 'error');
+      return;
+    }
+
+    setShowImportModal(false);
+    setImportForm({ sourceUrl: '', title: '', company: '', location: 'Remote' });
     await fetchJobs();
     selectJob(imported.data.id);
-    window.alert('External job imported. You can now run Assisted Apply on it.');
+    pushNotice('External job imported. You can now run Assisted Apply on it.', 'success');
   };
 
-  const handleBrowserAssistedDiscovery = async () => {
-    const sourceInput = (
-      window.prompt('Discovery source: linkedin or indeed', 'linkedin') ?? 'linkedin'
-    )
-      .trim()
-      .toLowerCase();
-    const source = sourceInput === 'indeed' ? 'indeed' : 'linkedin';
-
+  const openDiscoveryModal = () => {
     const defaultQuery =
       locationFilter === 'canada'
         ? 'software engineer canada'
         : locationFilter === 'us'
           ? 'software engineer united states'
           : 'software engineer remote';
-    const query = (window.prompt('Search query for browser-assisted discovery', defaultQuery) ?? '').trim();
-    if (!query) return;
+    setDiscoveryForm({ source: 'linkedin', query: defaultQuery });
+    setShowDiscoveryModal(true);
+  };
+
+  const handleBrowserAssistedDiscovery = async () => {
+    const query = discoveryForm.query.trim();
+    if (!query) {
+      pushNotice('Search query is required.', 'error');
+      return;
+    }
 
     setIsDiscovering(true);
     const result = await runBrowserAssistedDiscovery({
-      source,
+      source: discoveryForm.source,
       query,
       useVisibleBrowser,
       waitSeconds: 28,
@@ -305,13 +350,15 @@ export function JobFeedPage() {
     setIsDiscovering(false);
 
     if (result.error) {
-      window.alert(result.error);
+      pushNotice(result.error, 'error');
       return;
     }
 
+    setShowDiscoveryModal(false);
     await fetchJobs();
-    window.alert(
-      `Discovery complete (${result.data.source}): ${result.data.jobs_new} new jobs imported from ${result.data.jobs_found} found.`
+    pushNotice(
+      `Discovery complete (${result.data.source}): ${result.data.jobs_new} new jobs imported from ${result.data.jobs_found} found.`,
+      'success'
     );
   };
 
@@ -323,10 +370,11 @@ export function JobFeedPage() {
     const result = await sendAssistedGuidance(draftId, message);
     setIsSendingGuidance(false);
     if (result.error) {
-      window.alert(result.error);
+      pushNotice(result.error, 'error');
       return;
     }
     setGuidanceText('');
+    pushNotice('Agent guidance applied.', 'success');
     await pollProgressOnce(draftId);
   };
 
@@ -365,7 +413,7 @@ export function JobFeedPage() {
               Visible Browser
             </label>
             <button
-              onClick={() => void handleBrowserAssistedDiscovery()}
+              onClick={openDiscoveryModal}
               disabled={isDiscovering}
               className="rounded-md bg-blue-700 px-3 py-1.5 text-xs font-medium text-zinc-100 transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-70"
               title="Use your browser session to search LinkedIn/Indeed and import matched jobs"
@@ -373,7 +421,7 @@ export function JobFeedPage() {
               {isDiscovering ? 'Finding Jobs…' : 'Find via Browser'}
             </button>
             <button
-              onClick={() => void handleImportExternalJob()}
+              onClick={() => setShowImportModal(true)}
               className="rounded-md bg-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-100 transition-colors hover:bg-zinc-600"
               title="Manually add a job posting URL without scraping"
             >
@@ -411,6 +459,246 @@ export function JobFeedPage() {
           }
         />
       </div>
+
+      {notice && (
+        <div
+          className={`fixed bottom-4 right-4 z-[70] w-full max-w-md rounded-lg border px-4 py-3 shadow-2xl ${
+            notice.tone === 'error'
+              ? 'border-red-800 bg-red-950/90 text-red-100'
+              : notice.tone === 'success'
+                ? 'border-emerald-700 bg-emerald-950/90 text-emerald-100'
+                : 'border-zinc-700 bg-zinc-900/95 text-zinc-100'
+          }`}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <p className="text-sm leading-relaxed">{notice.message}</p>
+            <button
+              onClick={() => setNotice(null)}
+              className="shrink-0 rounded-md bg-black/25 px-2 py-1 text-[11px] font-medium text-zinc-200 hover:bg-black/40"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      {startApplyJob && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/70" onClick={() => setStartApplyJobId(null)} />
+          <div className="relative w-full max-w-xl rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
+            <div className="border-b border-zinc-800 px-5 py-4">
+              <h3 className="text-base font-semibold text-zinc-100">Start AI-Assisted Apply?</h3>
+              <p className="mt-1 text-sm text-zinc-400">
+                The agent will fill fields first, then wait for your explicit final submit confirmation.
+              </p>
+            </div>
+            <div className="space-y-3 px-5 py-4 text-sm text-zinc-300">
+              <div className="rounded-md border border-zinc-800 bg-zinc-950/70 p-3">
+                <p className="font-medium text-zinc-100">
+                  {startApplyJob.title} at {startApplyJob.company}
+                </p>
+                <p className="mt-1 text-xs text-zinc-400">
+                  Source: {startApplyJob.source}
+                  {startApplyJob.sourceUrl ? ` • ${startApplyJob.sourceUrl}` : ''}
+                </p>
+              </div>
+              <ul className="space-y-1 text-xs text-zinc-400">
+                <li>
+                  Mode:{' '}
+                  <span className="font-medium text-zinc-200">
+                    {useVisibleBrowser ? 'Visible Browser (user can intervene)' : 'Managed Browser'}
+                  </span>
+                </li>
+                <li>Step 1: AI fills draft fields.</li>
+                <li>Step 2: You review browser activity.</li>
+                <li>Step 3: You decide whether to submit.</li>
+              </ul>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-zinc-800 px-5 py-4">
+              <button
+                onClick={() => setStartApplyJobId(null)}
+                className="rounded-md bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-700"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmStartApply}
+                className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500"
+              >
+                Start Assisted Apply
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDiscoveryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/70" onClick={() => setShowDiscoveryModal(false)} />
+          <div className="relative w-full max-w-lg rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
+            <div className="border-b border-zinc-800 px-5 py-4">
+              <h3 className="text-base font-semibold text-zinc-100">Find Jobs via Browser</h3>
+              <p className="mt-1 text-sm text-zinc-400">
+                Search in a user-assisted browser session and import matched jobs.
+              </p>
+            </div>
+            <div className="space-y-4 px-5 py-4">
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                  Source
+                </span>
+                <select
+                  value={discoveryForm.source}
+                  onChange={(event) =>
+                    setDiscoveryForm((prev) => ({
+                      ...prev,
+                      source: event.target.value as BrowserDiscoverySource,
+                    }))
+                  }
+                  className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100"
+                >
+                  <option value="linkedin">LinkedIn</option>
+                  <option value="indeed">Indeed</option>
+                </select>
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                  Search Query
+                </span>
+                <input
+                  type="text"
+                  value={discoveryForm.query}
+                  onChange={(event) =>
+                    setDiscoveryForm((prev) => ({
+                      ...prev,
+                      query: event.target.value,
+                    }))
+                  }
+                  placeholder="software engineer canada"
+                  className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100"
+                />
+              </label>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-zinc-800 px-5 py-4">
+              <button
+                onClick={() => setShowDiscoveryModal(false)}
+                disabled={isDiscovering}
+                className="rounded-md bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => void handleBrowserAssistedDiscovery()}
+                disabled={isDiscovering || !discoveryForm.query.trim()}
+                className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {isDiscovering ? 'Finding…' : 'Find Jobs'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showImportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/70" onClick={() => setShowImportModal(false)} />
+          <div className="relative w-full max-w-xl rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
+            <div className="border-b border-zinc-800 px-5 py-4">
+              <h3 className="text-base font-semibold text-zinc-100">Import Job URL</h3>
+              <p className="mt-1 text-sm text-zinc-400">
+                Add a direct posting link without scraping. Title/company can be left blank.
+              </p>
+            </div>
+            <div className="space-y-3 px-5 py-4">
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                  Job URL
+                </span>
+                <input
+                  type="url"
+                  value={importForm.sourceUrl}
+                  onChange={(event) =>
+                    setImportForm((prev) => ({
+                      ...prev,
+                      sourceUrl: event.target.value,
+                    }))
+                  }
+                  placeholder="https://www.linkedin.com/jobs/view/..."
+                  className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100"
+                />
+              </label>
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                    Job Title (optional)
+                  </span>
+                  <input
+                    type="text"
+                    value={importForm.title}
+                    onChange={(event) =>
+                      setImportForm((prev) => ({
+                        ...prev,
+                        title: event.target.value,
+                      }))
+                    }
+                    placeholder="Software Engineer"
+                    className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100"
+                  />
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                    Company (optional)
+                  </span>
+                  <input
+                    type="text"
+                    value={importForm.company}
+                    onChange={(event) =>
+                      setImportForm((prev) => ({
+                        ...prev,
+                        company: event.target.value,
+                      }))
+                    }
+                    placeholder="Company name"
+                    className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100"
+                  />
+                </label>
+              </div>
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                  Location
+                </span>
+                <input
+                  type="text"
+                  value={importForm.location}
+                  onChange={(event) =>
+                    setImportForm((prev) => ({
+                      ...prev,
+                      location: event.target.value,
+                    }))
+                  }
+                  placeholder="Remote"
+                  className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100"
+                />
+              </label>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t border-zinc-800 px-5 py-4">
+              <button
+                onClick={() => setShowImportModal(false)}
+                className="rounded-md bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-700"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => void handleImportExternalJob()}
+                disabled={!importForm.sourceUrl.trim()}
+                className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                Import
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {isRunningFill && runningDraftId && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">

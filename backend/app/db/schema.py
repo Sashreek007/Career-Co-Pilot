@@ -11,12 +11,18 @@ CREATE TABLE IF NOT EXISTS user_profile (
     location TEXT,
     linkedin_url TEXT,
     github_url TEXT,
+    portfolio_url TEXT,
     summary TEXT,
     skills_json TEXT,
     experience_json TEXT,
     projects_json TEXT,
     certifications_json TEXT,
     role_interests_json TEXT,
+    resume_file_name TEXT,
+    resume_file_path TEXT,
+    resume_uploaded_at TEXT,
+    resume_text TEXT,
+    resume_parsed_json TEXT,
     updated_at TEXT DEFAULT (datetime('now'))
 );
 
@@ -101,6 +107,7 @@ CREATE TABLE IF NOT EXISTS settings (
     export_path TEXT DEFAULT '~/Downloads',
     llm_provider TEXT DEFAULT 'gemini',
     llm_api_key TEXT,
+    active_profile_id TEXT DEFAULT 'local',
     updated_at TEXT DEFAULT (datetime('now'))
 );
 """
@@ -110,6 +117,8 @@ def init_db(db_path: str | Path | None = None) -> None:
     conn = get_db(db_path)
     try:
         conn.executescript(SCHEMA_SQL)
+        _ensure_user_profile_columns(conn)
+        _ensure_settings_columns(conn)
         conn.execute(
             """
             INSERT INTO settings (id)
@@ -120,3 +129,46 @@ def init_db(db_path: str | Path | None = None) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _ensure_user_profile_columns(conn) -> None:
+    existing = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(user_profile)").fetchall()
+        if len(row) > 1
+    }
+    required_defs = [
+        ("portfolio_url", "TEXT"),
+        ("resume_file_name", "TEXT"),
+        ("resume_file_path", "TEXT"),
+        ("resume_uploaded_at", "TEXT"),
+        ("resume_text", "TEXT"),
+        ("resume_parsed_json", "TEXT"),
+    ]
+    for column, definition in required_defs:
+        if column in existing:
+            continue
+        conn.execute(f"ALTER TABLE user_profile ADD COLUMN {column} {definition}")
+
+
+def _ensure_settings_columns(conn) -> None:
+    existing = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(settings)").fetchall()
+        if len(row) > 1
+    }
+    required_defs = [
+        ("active_profile_id", "TEXT DEFAULT 'local'"),
+    ]
+    for column, definition in required_defs:
+        if column in existing:
+            continue
+        conn.execute(f"ALTER TABLE settings ADD COLUMN {column} {definition}")
+
+    conn.execute(
+        """
+        UPDATE settings
+        SET active_profile_id = COALESCE(NULLIF(TRIM(active_profile_id), ''), 'local')
+        WHERE id = 1
+        """
+    )

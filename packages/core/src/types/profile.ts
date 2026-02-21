@@ -64,5 +64,7 @@ export interface UserProfile {
   experiences: Experience[];
   certifications: Certification[];
   roleInterests: RoleInterest[];
+  resumeFileName?: string;
+  resumeUploadedAt?: string;
   updatedAt: string;
 }
