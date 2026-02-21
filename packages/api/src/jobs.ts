@@ -1,7 +1,9 @@
 import type { Job } from '@career-copilot/core';
+import type { UserProfile } from '@career-copilot/core';
 import { delay, MOCK_DELAY_MS } from './types';
 import { MOCK_JOBS } from './mock-data/jobs';
 import type { ApiResponse } from './types';
+import { getProfile } from './profile';
 
 type BackendJobSkill = {
   name?: string;
@@ -34,6 +36,8 @@ export interface ImportJobInput {
   remote?: boolean;
 }
 
+const NON_WORD_SKILL_CHARS_RE = /[^a-z0-9+#]+/g;
+
 function toErrorMessage(payload: unknown, fallback: string): string {
   if (payload && typeof payload === 'object' && 'detail' in payload) {
     const detail = (payload as { detail?: unknown }).detail;
@@ -54,22 +58,68 @@ function normaliseTier(
   return 'low';
 }
 
-function mapSkills(raw: BackendJob['skills_required_json']): Job['skills'] {
+function normalizeSkillToken(value: string): string {
+  const cleaned = value
+    .toLowerCase()
+    .replace(NON_WORD_SKILL_CHARS_RE, ' ')
+    .trim()
+    .replace(/\s+/g, ' ');
+  const aliasMap: Record<string, string> = {
+    'node js': 'nodejs',
+    'react js': 'react',
+    'next js': 'nextjs',
+    'rest apis': 'rest api',
+    'postgre sql': 'postgresql',
+    postgres: 'postgresql',
+  };
+  return aliasMap[cleaned] ?? cleaned;
+}
+
+function skillForms(value: string): string[] {
+  const token = normalizeSkillToken(value);
+  if (!token) return [];
+  const forms = new Set<string>([token, token.replace(/\s+/g, '')]);
+  if (token.endsWith('s') && token.length > 3) {
+    const singular = token.slice(0, -1);
+    forms.add(singular);
+    forms.add(singular.replace(/\s+/g, ''));
+  }
+  return Array.from(forms);
+}
+
+function extractUserSkillForms(profile: UserProfile | null): Set<string> {
+  const forms = new Set<string>();
+  if (!profile) return forms;
+  for (const skill of profile.skills ?? []) {
+    for (const form of skillForms(String(skill.name ?? ''))) {
+      forms.add(form);
+    }
+  }
+  return forms;
+}
+
+function hasSkillInProfile(skillName: string, userSkillForms: Set<string>): boolean {
+  if (userSkillForms.size === 0) return false;
+  return skillForms(skillName).some((form) => userSkillForms.has(form));
+}
+
+function mapSkills(raw: BackendJob['skills_required_json'], userSkillForms: Set<string>): Job['skills'] {
   if (!Array.isArray(raw)) return [];
   return raw
     .map((item) => {
       if (typeof item === 'string') {
         const name = item.trim();
         if (!name) return null;
-        return { name, required: true, userHas: false };
+        return { name, required: true, userHas: hasSkillInProfile(name, userSkillForms) };
       }
       if (item && typeof item === 'object') {
         const name = String(item.name ?? '').trim();
         if (!name) return null;
+        const backendUserHas = Boolean(item.userHas ?? false);
         return {
           name,
           required: Boolean(item.required ?? true),
-          userHas: Boolean(item.userHas ?? false),
+          userHas: backendUserHas || hasSkillInProfile(name, userSkillForms),
         };
       }
       return null;
@@ -77,12 +127,12 @@ function mapSkills(raw: BackendJob['skills_required_json']): Job['skills'] {
     .filter((item): item is Job['skills'][number] => item !== null);
 }
 
-function mapBackendJob(job: BackendJob): Job {
+function mapBackendJob(job: BackendJob, userSkillForms: Set<string>): Job {
   const rawScore = Number(job.match_score ?? 0);
   const clamped = Number.isFinite(rawScore) ? Math.max(0, Math.min(1, rawScore)) : 0;
   const overall = Math.round(clamped * 100);
   const tier = normaliseTier(job.match_tier, overall);
-  const skills = mapSkills(job.skills_required_json);
+  const skills = mapSkills(job.skills_required_json, userSkillForms);
 
   return {
     id: String(job.id),
@@ -108,7 +158,7 @@ function mapBackendJob(job: BackendJob): Job {
   };
 }
 
-async function fetchBackendJobs(): Promise<Job[]> {
+async function fetchBackendJobs(userSkillForms: Set<string>): Promise<Job[]> {
   const response = await fetch('/api/jobs');
   if (!response.ok) {
     throw new Error(`Failed to fetch jobs from backend (${response.status})`);
@@ -117,13 +167,20 @@ async function fetchBackendJobs(): Promise<Job[]> {
   if (!Array.isArray(payload)) {
     return [];
   }
-  return payload.map((item) => mapBackendJob(item as BackendJob));
+  return payload.map((item) => mapBackendJob(item as BackendJob, userSkillForms));
 }
 
 export async function getJobs(): Promise<ApiResponse<Job[]>> {
   await delay(MOCK_DELAY_MS);
+  let userSkillForms = new Set<string>();
   try {
-    const data = await fetchBackendJobs();
+    const profile = await getProfile();
+    userSkillForms = extractUserSkillForms(profile.data ?? null);
+  } catch {
+    // Continue without profile-based enrichment.
+  }
+  try {
+    const data = await fetchBackendJobs(userSkillForms);
     if (data.length > 0) {
       return { data, status: 200 };
     }
@@ -167,5 +224,12 @@ export async function importExternalJob(input: ImportJobInput): Promise<ApiRespo
       status: response.status,
     };
   }
-  return { data: mapBackendJob(payload as BackendJob), status: response.status };
+  let userSkillForms = new Set<string>();
+  try {
+    const profile = await getProfile();
+    userSkillForms = extractUserSkillForms(profile.data ?? null);
+  } catch {
+    // Continue without profile-based enrichment.
+  }
+  return { data: mapBackendJob(payload as BackendJob, userSkillForms), status: response.status };
 }
