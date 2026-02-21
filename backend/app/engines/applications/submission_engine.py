@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 import sqlite3
@@ -22,6 +23,10 @@ AI_AGENT_MAX_CONTROLS = 120
 
 class RateLimitError(ValueError):
     """Raised when daily submission cap is reached."""
+
+
+class BrowserUnavailableError(RuntimeError):
+    """Raised when Playwright browser runtime is unavailable."""
 
 
 def _parse_json_obj(raw: Any) -> dict[str, Any]:
@@ -419,6 +424,15 @@ def _assert_can_submit(draft: dict[str, Any]) -> None:
         raise ValueError("Draft must be approved before submission")
 
 
+def _should_launch_headless() -> bool:
+    value = os.environ.get("APPLICATION_BROWSER_HEADLESS", "").strip().lower()
+    if value in {"1", "true", "yes"}:
+        return True
+    if value in {"0", "false", "no"}:
+        return False
+    return not bool(os.environ.get("DISPLAY", "").strip())
+
+
 async def _fill_known_fields(
     page, form_fields: list[dict[str, Any]], answers: dict[str, Any]
 ) -> None:
@@ -490,7 +504,20 @@ async def _run_submission(
 
     try:
         playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(headless=False)
+        try:
+            browser = await playwright.chromium.launch(headless=_should_launch_headless())
+        except Exception as exc:
+            message = str(exc)
+            if "Executable doesn't exist" in message:
+                raise BrowserUnavailableError(
+                    "Playwright Chromium is missing in backend container. Rebuild backend image."
+                ) from exc
+            if "Missing X server" in message or "missing x server" in message.lower():
+                raise BrowserUnavailableError(
+                    "Headed browser launch is unavailable in this environment. "
+                    "Set APPLICATION_BROWSER_HEADLESS=true."
+                ) from exc
+            raise
         context = await browser.new_context()
         page = await context.new_page()
         await page.goto(job_url, wait_until="networkidle")

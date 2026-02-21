@@ -11,6 +11,7 @@ from ..db.database import get_db
 from ..engines.applications.draft_generator import generate_draft_answers
 from ..engines.applications.form_analyzer import analyze_form
 from ..engines.applications.submission_engine import (
+    BrowserUnavailableError,
     RateLimitError,
     confirm_submit_application,
     submit_application,
@@ -183,6 +184,8 @@ async def submit_draft(
         }
     except RateLimitError as err:
         raise HTTPException(status_code=429, detail=str(err)) from err
+    except BrowserUnavailableError as err:
+        raise HTTPException(status_code=503, detail=str(err)) from err
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
 
@@ -200,6 +203,8 @@ async def confirm_submit_draft(
         result = await confirm_submit_application(draft_id, db)
     except RateLimitError as err:
         raise HTTPException(status_code=429, detail=str(err)) from err
+    except BrowserUnavailableError as err:
+        raise HTTPException(status_code=503, detail=str(err)) from err
     except ValueError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
 
