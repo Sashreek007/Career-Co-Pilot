@@ -27,8 +27,8 @@ type BackendJob = {
 
 export interface ImportJobInput {
   sourceUrl: string;
-  title: string;
-  company: string;
+  title?: string;
+  company?: string;
   location?: string;
   description?: string;
   remote?: boolean;

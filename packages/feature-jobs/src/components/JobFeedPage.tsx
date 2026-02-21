@@ -93,17 +93,24 @@ export function JobFeedPage() {
   };
 
   const handleImportExternalJob = async () => {
-    const sourceUrl = window.prompt('Paste the job URL (LinkedIn/Indeed/Greenhouse or any direct posting).');
+    const sourceUrl = window.prompt(
+      [
+        'Paste a direct job posting URL.',
+        'LinkedIn tip: use a /jobs/view/<job-id>/ link when possible.',
+      ].join('\n')
+    );
     if (!sourceUrl) return;
 
-    const title = window.prompt('Job title');
-    if (!title) return;
-
-    const company = window.prompt('Company name');
-    if (!company) return;
+    const title = window.prompt('Job title (optional, leave blank to auto-detect)') ?? '';
+    const company = window.prompt('Company name (optional, leave blank to auto-detect)') ?? '';
 
     const location = window.prompt('Location (optional)', 'Remote') ?? 'Remote';
-    const imported = await importExternalJob({ sourceUrl, title, company, location });
+    const imported = await importExternalJob({
+      sourceUrl,
+      title: title.trim() || undefined,
+      company: company.trim() || undefined,
+      location,
+    });
     if (imported.error || !imported.data) {
       window.alert(imported.error ?? 'Failed to import external job.');
       return;
