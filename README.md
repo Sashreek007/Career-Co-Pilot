@@ -30,3 +30,11 @@ docker compose up --build
 # → frontend: http://localhost:3000
 # → backend:  http://localhost:8000
 ```
+
+## Browser Helper Extension
+
+Use the Chrome extension to capture LinkedIn/Indeed jobs from your own browser tab and import into the app.
+
+See setup and usage:
+
+`browser-helper-extension/README.md`

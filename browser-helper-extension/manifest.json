@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Career Co-Pilot Browser Helper",
+  "description": "Capture jobs from your current LinkedIn/Indeed tab and import into Career Co-Pilot.",
+  "version": "0.1.0",
+  "minimum_chrome_version": "114",
+  "permissions": ["activeTab", "storage", "tabs"],
+  "host_permissions": [
+    "http://localhost:8000/*",
+    "https://www.linkedin.com/*",
+    "https://www.indeed.com/*",
+    "https://*.indeed.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Career Co-Pilot Browser Helper"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.linkedin.com/*",
+        "https://www.indeed.com/*",
+        "https://*.indeed.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

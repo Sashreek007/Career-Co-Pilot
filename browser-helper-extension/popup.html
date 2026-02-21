@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Career Co-Pilot Helper</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="panel">
+      <header class="header">
+        <h1>Career Co-Pilot Helper</h1>
+        <p>Capture jobs from this tab and import into your app.</p>
+      </header>
+
+      <section class="section">
+        <label for="apiBase">Backend URL</label>
+        <div class="row">
+          <input id="apiBase" type="text" placeholder="http://localhost:8000" />
+          <button id="saveSettings" class="button button-muted" type="button">Save</button>
+        </div>
+        <div class="row row-small">
+          <button id="checkBackend" class="button button-muted" type="button">Check Backend</button>
+          <span id="backendStatus" class="hint">Not checked</span>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="row row-small">
+          <button id="detectPage" class="button button-muted" type="button">Detect Page</button>
+          <span id="pageStatus" class="hint">Unknown</span>
+        </div>
+      </section>
+
+      <section class="section">
+        <label for="maxJobs">List capture count</label>
+        <div class="row">
+          <input id="maxJobs" type="number" min="1" max="30" value="10" />
+          <button id="captureList" class="button" type="button">Capture List</button>
+        </div>
+        <div class="row">
+          <button id="captureCurrent" class="button button-primary" type="button">
+            Capture Current Job
+          </button>
+          <button id="openApp" class="button button-muted" type="button">Open App</button>
+        </div>
+      </section>
+
+      <section class="section">
+        <div id="result" class="result">Ready.</div>
+      </section>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
