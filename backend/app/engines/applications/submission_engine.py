@@ -57,6 +57,29 @@ def _normalize_space(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
+def _int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, min(value, maximum))
+
+
+def _submission_page_timeout_seconds() -> int:
+    return _int_env("APPLICATION_PAGE_TIMEOUT_SECONDS", default=45, minimum=10, maximum=180)
+
+
+def _ai_planning_timeout_seconds() -> int:
+    return _int_env("APPLICATION_AI_PLANNING_TIMEOUT_SECONDS", default=12, minimum=3, maximum=45)
+
+
+def _action_timeout_ms() -> int:
+    return _int_env("APPLICATION_ACTION_TIMEOUT_MS", default=1500, minimum=250, maximum=10000)
+
+
 def _strip_code_fences(raw: str) -> str:
     text = raw.strip()
     if text.startswith("```"):
@@ -232,7 +255,10 @@ async def _plan_ai_actions(
     )
 
     try:
-        response = await client.generate_content_async(prompt)
+        response = await asyncio.wait_for(
+            client.generate_content_async(prompt),
+            timeout=_ai_planning_timeout_seconds(),
+        )
         raw = _strip_code_fences(_normalize_space(response.text))
         if not raw:
             return []
@@ -445,13 +471,18 @@ async def _fill_known_fields(
         if value is None:
             continue
         if isinstance(value, str) and value.startswith("[REQUIRES_REVIEW:"):
-            raise ValueError(f"Draft still has unresolved review placeholders ({label})")
+            if bool(field.get("required", False)):
+                raise ValueError(f"Draft still has unresolved review placeholders ({label})")
+            continue
 
         field_type = str(field.get("type") or "").lower()
         await asyncio.sleep(random.uniform(0.3, 1.2))
 
         try:
             locator = page.get_by_label(label, exact=False).first
+            if await locator.count() == 0:
+                logger.warning("Skipping unfillable field label=%s", label)
+                continue
             await locator.scroll_into_view_if_needed()
             if field_type == "dropdown":
                 await locator.select_option(label=str(value))
@@ -520,7 +551,11 @@ async def _run_submission(
             raise
         context = await browser.new_context()
         page = await context.new_page()
-        await page.goto(job_url, wait_until="networkidle")
+        page.set_default_timeout(_action_timeout_ms())
+        await asyncio.wait_for(
+            page.goto(job_url, wait_until="domcontentloaded"),
+            timeout=_submission_page_timeout_seconds(),
+        )
 
         await _fill_known_fields(page, form_fields, filled_answers)
         await _run_ai_assisted_fill(
@@ -537,6 +572,8 @@ async def _run_submission(
             return {"status": "submitted", "screenshot_path": str(screenshot_path)}
 
         return {"status": "ready_for_final_approval", "screenshot_path": str(screenshot_path)}
+    except asyncio.TimeoutError as exc:
+        raise ValueError("Timed out loading or operating on the job page") from exc
     except Exception:
         logger.exception("Submission engine failed for draft_id=%s", draft_id)
         raise
