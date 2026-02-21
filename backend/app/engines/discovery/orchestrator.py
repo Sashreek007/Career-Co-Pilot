@@ -6,9 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from .adapters.base import JobSourceAdapter
-from .adapters.browser_assisted import IndeedUserAssistedAdapter, LinkedInUserAssistedAdapter
 from .adapters.greenhouse import GreenhouseAdapter
-from .adapters.remotive import RemotiveAdapter
 from .deduplicator import deduplicate_jobs
 from .normalizer import normalize_jobs
 from .query_generator import generate_queries
@@ -17,12 +15,9 @@ from .ranker import apply_ranking
 logger = logging.getLogger(__name__)
 
 _SOURCE_ORDER = [
-    "remotive",
     "greenhouse",
-    "linkedin_browser",
-    "indeed_browser",
 ]
-_DEFAULT_SOURCES = ["remotive", "greenhouse"]
+_DEFAULT_SOURCES = ["greenhouse"]
 
 
 def _parse_json_array(raw: Any) -> list[Any]:
@@ -132,14 +127,8 @@ def _build_adapters(
 ) -> dict[str, JobSourceAdapter]:
     adapters: dict[str, JobSourceAdapter] = {}
     for source in sources:
-        if source == "remotive":
-            adapters[source] = RemotiveAdapter()
-        elif source == "greenhouse":
+        if source == "greenhouse":
             adapters[source] = GreenhouseAdapter()
-        elif source == "linkedin_browser":
-            adapters[source] = LinkedInUserAssistedAdapter()
-        elif source == "indeed_browser":
-            adapters[source] = IndeedUserAssistedAdapter()
     return adapters
 
 
