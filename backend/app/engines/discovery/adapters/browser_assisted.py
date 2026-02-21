@@ -8,6 +8,7 @@ from urllib.parse import quote_plus
 
 from playwright.async_api import async_playwright
 
+from ...selenium_cdp import bootstrap_selenium_cdp_session, close_selenium_session
 from .base import JobSourceAdapter, RawJobData
 
 logger = logging.getLogger(__name__)
@@ -113,12 +114,26 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
         page = None
         close_browser = True
         close_context = True
+        selenium_session_delete_url: str | None = None
 
         try:
             playwright = await async_playwright().start()
 
             if self.use_visible_browser:
-                browser = await playwright.chromium.connect_over_cdp(self.cdp_endpoint)
+                try:
+                    browser = await playwright.chromium.connect_over_cdp(self.cdp_endpoint)
+                except Exception:
+                    fallback_endpoint, delete_url, fallback_error = bootstrap_selenium_cdp_session(
+                        cdp_endpoint=self.cdp_endpoint,
+                        selenium_remote_url=os.environ.get("DISCOVERY_SELENIUM_REMOTE_URL", "").strip(),
+                    )
+                    if not fallback_endpoint:
+                        raise RuntimeError(
+                            "Could not connect to visible browser session."
+                            + (f" {fallback_error}" if fallback_error else "")
+                        ) from None
+                    selenium_session_delete_url = delete_url
+                    browser = await playwright.chromium.connect_over_cdp(fallback_endpoint)
                 close_browser = False
                 if browser.contexts:
                     context = browser.contexts[0]
@@ -188,6 +203,8 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
                 await context.close()
             if browser is not None and close_browser:
                 await browser.close()
+            if selenium_session_delete_url:
+                close_selenium_session(selenium_session_delete_url)
             if playwright is not None:
                 await playwright.stop()
 

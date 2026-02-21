@@ -13,6 +13,7 @@ from typing import Any
 from playwright.async_api import async_playwright
 
 from ...clients.gemini import get_gemini_client
+from ..selenium_cdp import bootstrap_selenium_cdp_session, close_selenium_session
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,15 @@ def _progress_snapshot(draft_id: str, screenshot_path: str | None) -> None:
         if state is None:
             return
         state["latest_screenshot_path"] = screenshot_path
+        state["updated_at"] = _utc_now_iso()
+
+
+def _progress_mode(draft_id: str, mode: str) -> None:
+    with _PROGRESS_LOCK:
+        state = _SUBMISSION_PROGRESS.get(draft_id)
+        if state is None:
+            return
+        state["mode"] = mode
         state["updated_at"] = _utc_now_iso()
 
 
@@ -641,6 +651,10 @@ def _cdp_endpoint() -> str:
     return "http://browser:9222"
 
 
+def _selenium_remote_url() -> str:
+    return os.environ.get("APPLICATION_SELENIUM_REMOTE_URL", "").strip()
+
+
 def _normalize_manual_pause_seconds(value: int | None) -> int:
     try:
         seconds = int(value or 0)
@@ -725,6 +739,7 @@ async def _run_submission(
     close_page = True
     close_context = True
     close_browser = True
+    selenium_session_delete_url: str | None = None
     SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
     screenshot_path = SCREENSHOT_DIR / f"{draft_id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.png"
     live_screenshot_path = SCREENSHOT_DIR / f"{draft_id}-live.png"
@@ -751,13 +766,32 @@ async def _run_submission(
             _progress_event(draft_id, f"Connecting to visible browser via CDP ({cdp_endpoint}).")
             try:
                 browser = await playwright.chromium.connect_over_cdp(cdp_endpoint)
-            except Exception as exc:
-                raise BrowserUnavailableError(
-                    "Could not connect to the visible browser session. "
-                    "Make sure the Docker browser service is running and open http://localhost:7900 "
-                    "to view/intervene. If you want to use host Chrome instead, set "
-                    "APPLICATION_CDP_ENDPOINT to your host debugging endpoint."
-                ) from exc
+            except Exception as direct_exc:
+                _progress_event(
+                    draft_id,
+                    "Direct CDP attach failed. Attempting Selenium visible session bootstrap.",
+                    level="warning",
+                )
+                fallback_endpoint, delete_url, fallback_error = bootstrap_selenium_cdp_session(
+                    cdp_endpoint=cdp_endpoint,
+                    selenium_remote_url=_selenium_remote_url(),
+                )
+                if fallback_endpoint:
+                    selenium_session_delete_url = delete_url
+                    cdp_endpoint = fallback_endpoint
+                    _progress_event(draft_id, f"Attached Selenium CDP endpoint ({cdp_endpoint}).")
+                    run_mode = "visible_browser_selenium"
+                    _progress_mode(draft_id, run_mode)
+                    browser = await playwright.chromium.connect_over_cdp(cdp_endpoint)
+                else:
+                    detail = f" {fallback_error}" if fallback_error else ""
+                    raise BrowserUnavailableError(
+                        "Could not connect to the visible browser session. "
+                        "Make sure the Docker browser service is running and open http://localhost:7900 "
+                        "to view/intervene. If you want to use host Chrome instead, set "
+                        "APPLICATION_CDP_ENDPOINT to your host debugging endpoint."
+                        f"{detail}"
+                    ) from direct_exc
 
             close_browser = False
             if browser.contexts:
@@ -866,6 +900,8 @@ async def _run_submission(
             await context.close()
         if browser is not None and close_browser:
             await browser.close()
+        if selenium_session_delete_url:
+            close_selenium_session(selenium_session_delete_url)
         if playwright is not None:
             await playwright.stop()
 
