@@ -16,6 +16,7 @@ from ..engines.applications.submission_engine import (
     BrowserUnavailableError,
     RateLimitError,
     confirm_submit_application,
+    get_submission_progress,
     submit_application,
 )
 
@@ -36,12 +37,15 @@ class UpdateDraftRequest(BaseModel):
 class AssistedFillRequest(BaseModel):
     confirm_user_assisted: bool = False
     acknowledge_platform_terms: bool = False
+    use_visible_browser: bool = False
+    pause_for_manual_input_seconds: int = 0
 
 
 class AssistedFinalSubmitRequest(BaseModel):
     confirm_user_assisted: bool = False
     acknowledge_platform_terms: bool = False
     confirm_final_submit: bool = False
+    use_visible_browser: bool = False
 
 
 def db_conn():
@@ -187,12 +191,18 @@ async def submit_draft(
 ):
     _assert_assisted_consent(payload.confirm_user_assisted, payload.acknowledge_platform_terms)
     try:
-        result = await submit_application(draft_id, db)
+        result = await submit_application(
+            draft_id,
+            db,
+            use_visible_browser=payload.use_visible_browser,
+            pause_for_manual_input_seconds=payload.pause_for_manual_input_seconds,
+        )
         screenshot_path = result.get("screenshot_path")
         return {
             "status": result.get("status", "ready_for_final_approval"),
             "screenshot_path": screenshot_path,
             "screenshot_url": _artifact_url_for_screenshot_path(screenshot_path),
+            "mode": result.get("mode"),
             "requires_explicit_final_submit": True,
         }
     except RateLimitError as err:
@@ -213,7 +223,11 @@ async def confirm_submit_draft(
     if not payload.confirm_final_submit:
         raise HTTPException(status_code=400, detail="Final submit confirmation is required")
     try:
-        result = await confirm_submit_application(draft_id, db)
+        result = await confirm_submit_application(
+            draft_id,
+            db,
+            use_visible_browser=payload.use_visible_browser,
+        )
     except RateLimitError as err:
         raise HTTPException(status_code=429, detail=str(err)) from err
     except BrowserUnavailableError as err:
@@ -247,5 +261,22 @@ async def confirm_submit_draft(
         "status": result.get("status", "submitted"),
         "screenshot_path": screenshot_path,
         "screenshot_url": _artifact_url_for_screenshot_path(screenshot_path),
+        "mode": result.get("mode"),
         "draft": draft,
+    }
+
+
+@router.get("/{draft_id}/progress")
+def get_draft_progress(
+    draft_id: str,
+    db: sqlite3.Connection = Depends(db_conn),
+):
+    _get_draft_or_404(draft_id, db)
+    progress = get_submission_progress(draft_id)
+    screenshot_path = progress.get("latest_screenshot_path")
+    return {
+        **progress,
+        "latest_screenshot_url": _artifact_url_for_screenshot_path(
+            screenshot_path if isinstance(screenshot_path, str) else None
+        ),
     }

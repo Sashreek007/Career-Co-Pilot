@@ -7,6 +7,7 @@ import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from playwright.async_api import async_playwright
@@ -19,6 +20,10 @@ SCREENSHOT_DIR = Path(__file__).resolve().parents[3] / "data" / "screenshots"
 AI_AGENT_MAX_TURNS = 3
 AI_AGENT_MAX_ACTIONS_PER_TURN = 6
 AI_AGENT_MAX_CONTROLS = 120
+PROGRESS_EVENT_LIMIT = 160
+
+_PROGRESS_LOCK = Lock()
+_SUBMISSION_PROGRESS: dict[str, dict[str, Any]] = {}
 
 
 class RateLimitError(ValueError):
@@ -27,6 +32,108 @@ class RateLimitError(ValueError):
 
 class BrowserUnavailableError(RuntimeError):
     """Raised when Playwright browser runtime is unavailable."""
+
+
+def _utc_now_iso() -> str:
+    return datetime.utcnow().isoformat()
+
+
+def _progress_start(draft_id: str, *, mode: str) -> None:
+    with _PROGRESS_LOCK:
+        _SUBMISSION_PROGRESS[draft_id] = {
+            "draft_id": draft_id,
+            "status": "running",
+            "mode": mode,
+            "started_at": _utc_now_iso(),
+            "updated_at": _utc_now_iso(),
+            "latest_screenshot_path": None,
+            "events": [],
+            "error": None,
+        }
+
+
+def _progress_event(draft_id: str, message: str, *, level: str = "info") -> None:
+    text = _normalize_space(message)
+    if not text:
+        return
+    with _PROGRESS_LOCK:
+        state = _SUBMISSION_PROGRESS.get(draft_id)
+        if state is None:
+            state = {
+                "draft_id": draft_id,
+                "status": "running",
+                "mode": "unknown",
+                "started_at": _utc_now_iso(),
+                "updated_at": _utc_now_iso(),
+                "latest_screenshot_path": None,
+                "events": [],
+                "error": None,
+            }
+            _SUBMISSION_PROGRESS[draft_id] = state
+
+        events = state.get("events", [])
+        if not isinstance(events, list):
+            events = []
+            state["events"] = events
+        events.append({"at": _utc_now_iso(), "level": level, "message": text})
+        if len(events) > PROGRESS_EVENT_LIMIT:
+            del events[: len(events) - PROGRESS_EVENT_LIMIT]
+        state["updated_at"] = _utc_now_iso()
+
+
+def _progress_snapshot(draft_id: str, screenshot_path: str | None) -> None:
+    if not screenshot_path:
+        return
+    with _PROGRESS_LOCK:
+        state = _SUBMISSION_PROGRESS.get(draft_id)
+        if state is None:
+            return
+        state["latest_screenshot_path"] = screenshot_path
+        state["updated_at"] = _utc_now_iso()
+
+
+def _progress_finish(draft_id: str, *, status: str, error: str | None = None) -> None:
+    with _PROGRESS_LOCK:
+        state = _SUBMISSION_PROGRESS.get(draft_id)
+        if state is None:
+            state = {
+                "draft_id": draft_id,
+                "started_at": _utc_now_iso(),
+                "mode": "unknown",
+                "events": [],
+            }
+            _SUBMISSION_PROGRESS[draft_id] = state
+        state["status"] = status
+        state["error"] = _normalize_space(error) if error else None
+        state["updated_at"] = _utc_now_iso()
+
+
+def get_submission_progress(draft_id: str) -> dict[str, Any]:
+    with _PROGRESS_LOCK:
+        state = _SUBMISSION_PROGRESS.get(draft_id)
+        if state is None:
+            return {
+                "draft_id": draft_id,
+                "status": "idle",
+                "mode": "none",
+                "started_at": None,
+                "updated_at": _utc_now_iso(),
+                "latest_screenshot_path": None,
+                "events": [],
+                "error": None,
+            }
+        events = state.get("events", [])
+        safe_events = [dict(item) for item in events] if isinstance(events, list) else []
+        return {
+            "draft_id": state.get("draft_id", draft_id),
+            "status": state.get("status", "running"),
+            "mode": state.get("mode", "unknown"),
+            "started_at": state.get("started_at"),
+            "updated_at": state.get("updated_at", _utc_now_iso()),
+            "latest_screenshot_path": state.get("latest_screenshot_path"),
+            "events": safe_events,
+            "error": state.get("error"),
+        }
 
 
 def _parse_json_obj(raw: Any) -> dict[str, Any]:
@@ -88,6 +195,17 @@ def _strip_code_fences(raw: str) -> str:
     return text.strip()
 
 
+async def _run_hook(hook: Any, *args: Any) -> None:
+    if hook is None:
+        return
+    try:
+        result = hook(*args)
+        if asyncio.iscoroutine(result):
+            await result
+    except Exception:
+        logger.debug("Progress hook failed", exc_info=True)
+
+
 def _summarize_answer_value(value: Any) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -98,6 +216,23 @@ def _summarize_answer_value(value: Any) -> str:
             return "[FILE_PATH]"
         return "[OBJECT]"
     return _normalize_space(value)
+
+
+def _describe_ai_action(action: dict[str, Any]) -> str:
+    action_type = _normalize_space(action.get("type")).lower()
+    if action_type == "fill":
+        return f"Fill '{_normalize_space(action.get('label'))}'"
+    if action_type == "select":
+        return f"Select '{_normalize_space(action.get('value'))}' for '{_normalize_space(action.get('label'))}'"
+    if action_type == "check":
+        return f"Check '{_normalize_space(action.get('label'))}'"
+    if action_type == "uncheck":
+        return f"Uncheck '{_normalize_space(action.get('label'))}'"
+    if action_type == "click_button":
+        return f"Click button '{_normalize_space(action.get('button_text'))}'"
+    if action_type == "wait":
+        return f"Wait {int(action.get('milliseconds') or 0)}ms"
+    return "Run AI action"
 
 
 def _build_answer_targets(form_fields: list[dict[str, Any]], answers: dict[str, Any]) -> list[dict[str, str]]:
@@ -345,16 +480,21 @@ async def _run_ai_assisted_fill(
     form_fields: list[dict[str, Any]],
     answers: dict[str, Any],
     allow_submit_click: bool = False,
+    on_event: Any = None,
+    on_action_executed: Any = None,
 ) -> None:
     client = get_gemini_client()
     if client is None:
+        await _run_hook(on_event, "Gemini client unavailable; skipping AI-assisted step.")
         return
 
     answer_targets = _build_answer_targets(form_fields, answers)
     if not answer_targets:
+        await _run_hook(on_event, "No known draft answers found for AI-assisted fill.")
         return
 
     logger.info("Running AI-assisted apply operator for %s @ %s", job.get("title"), job.get("company"))
+    await _run_hook(on_event, "AI operator started.")
     seen_actions: set[str] = set()
 
     for turn in range(1, AI_AGENT_MAX_TURNS + 1):
@@ -367,8 +507,10 @@ async def _run_ai_assisted_fill(
             allow_submit_click=allow_submit_click,
         )
         if not actions:
+            await _run_hook(on_event, f"AI operator stopped: no actions planned on turn {turn}.")
             return
 
+        await _run_hook(on_event, f"AI planned {len(actions)} actions on turn {turn}.")
         executed = 0
         for action in actions:
             signature = json.dumps(action, sort_keys=True)
@@ -376,13 +518,17 @@ async def _run_ai_assisted_fill(
                 continue
             seen_actions.add(signature)
 
+            await _run_hook(on_event, f"AI step: {_describe_ai_action(action)}")
             ok = await _execute_ai_action(page, action, allow_submit_click=allow_submit_click)
             if ok:
                 executed += 1
+                await _run_hook(on_action_executed, action)
                 await asyncio.sleep(random.uniform(0.2, 0.8))
 
         if executed == 0:
+            await _run_hook(on_event, f"AI operator paused: all planned actions were skipped on turn {turn}.")
             return
+    await _run_hook(on_event, "AI operator finished planned turns.")
 
 def _load_draft_and_job(draft_id: str, db_conn: sqlite3.Connection) -> tuple[dict[str, Any], dict[str, Any]]:
     row = db_conn.execute(
@@ -459,6 +605,21 @@ def _should_launch_headless() -> bool:
     return not bool(os.environ.get("DISPLAY", "").strip())
 
 
+def _cdp_endpoint() -> str:
+    value = os.environ.get("APPLICATION_CDP_ENDPOINT", "").strip()
+    if value:
+        return value
+    return "http://host.docker.internal:9222"
+
+
+def _normalize_manual_pause_seconds(value: int | None) -> int:
+    try:
+        seconds = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(seconds, 300))
+
+
 async def _fill_known_fields(
     page, form_fields: list[dict[str, Any]], answers: dict[str, Any]
 ) -> None:
@@ -514,6 +675,8 @@ async def _run_submission(
     db_conn: sqlite3.Connection,
     *,
     click_submit: bool,
+    use_visible_browser: bool = False,
+    pause_for_manual_input_seconds: int = 0,
 ) -> dict[str, Any]:
     draft, job = _load_draft_and_job(draft_id, db_conn)
     _assert_can_submit(draft)
@@ -530,67 +693,178 @@ async def _run_submission(
     browser = None
     context = None
     page = None
+    close_page = True
+    close_context = True
+    close_browser = True
     SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
     screenshot_path = SCREENSHOT_DIR / f"{draft_id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.png"
+    live_screenshot_path = SCREENSHOT_DIR / f"{draft_id}-live.png"
+    manual_pause_seconds = _normalize_manual_pause_seconds(pause_for_manual_input_seconds)
+    run_mode = "visible_local_browser_cdp" if use_visible_browser else ("headless" if _should_launch_headless() else "headed")
+    _progress_start(draft_id, mode=run_mode)
+    _progress_event(draft_id, f"Starting operator in {run_mode} mode.")
+
+    async def _capture_live_screenshot(label: str) -> None:
+        if page is None:
+            return
+        try:
+            await page.screenshot(path=str(live_screenshot_path), full_page=True)
+            _progress_snapshot(draft_id, str(live_screenshot_path))
+            _progress_event(draft_id, f"Captured browser snapshot ({label}).")
+        except Exception:
+            logger.debug("Live screenshot capture failed for %s", draft_id, exc_info=True)
 
     try:
         playwright = await async_playwright().start()
-        try:
-            browser = await playwright.chromium.launch(headless=_should_launch_headless())
-        except Exception as exc:
-            message = str(exc)
-            if "Executable doesn't exist" in message:
+        if use_visible_browser:
+            cdp_endpoint = _cdp_endpoint()
+            _progress_event(draft_id, f"Connecting to local browser via CDP ({cdp_endpoint}).")
+            try:
+                browser = await playwright.chromium.connect_over_cdp(cdp_endpoint)
+            except Exception as exc:
                 raise BrowserUnavailableError(
-                    "Playwright Chromium is missing in backend container. Rebuild backend image."
+                    "Could not connect to local Chrome for visible mode. "
+                    "Start Chrome with remote debugging first. "
+                    "Example (macOS): open -na 'Google Chrome' --args "
+                    "--remote-debugging-port=9222 --user-data-dir=/tmp/career-copilot-cdp"
                 ) from exc
-            if "Missing X server" in message or "missing x server" in message.lower():
-                raise BrowserUnavailableError(
-                    "Headed browser launch is unavailable in this environment. "
-                    "Set APPLICATION_BROWSER_HEADLESS=true."
-                ) from exc
-            raise
-        context = await browser.new_context()
-        page = await context.new_page()
+
+            close_browser = False
+            if browser.contexts:
+                context = browser.contexts[0]
+                close_context = False
+                _progress_event(draft_id, "Attached to existing browser context.")
+            else:
+                context = await browser.new_context()
+                close_context = True
+                _progress_event(draft_id, "Created a new browser context.")
+            page = await context.new_page()
+            close_page = False
+        else:
+            try:
+                browser = await playwright.chromium.launch(headless=_should_launch_headless())
+            except Exception as exc:
+                message = str(exc)
+                if "Executable doesn't exist" in message:
+                    raise BrowserUnavailableError(
+                        "Playwright Chromium is missing in backend container. Rebuild backend image."
+                    ) from exc
+                if "Missing X server" in message or "missing x server" in message.lower():
+                    raise BrowserUnavailableError(
+                        "Headed browser launch is unavailable in this environment. "
+                        "Set APPLICATION_BROWSER_HEADLESS=true."
+                    ) from exc
+                raise
+            context = await browser.new_context()
+            page = await context.new_page()
+            close_browser = True
+            close_context = True
+            close_page = True
+
         page.set_default_timeout(_action_timeout_ms())
+        _progress_event(draft_id, "Navigating to job page.")
         await asyncio.wait_for(
             page.goto(job_url, wait_until="domcontentloaded"),
             timeout=_submission_page_timeout_seconds(),
         )
+        await _capture_live_screenshot("page-loaded")
 
+        if use_visible_browser and manual_pause_seconds > 0:
+            _progress_event(
+                draft_id,
+                (
+                    f"Waiting {manual_pause_seconds}s for manual intervention "
+                    "(you can type in the browser now)."
+                ),
+            )
+            await page.wait_for_timeout(manual_pause_seconds * 1000)
+            await _capture_live_screenshot("after-manual-pause")
+
+        _progress_event(draft_id, "Filling known draft fields.")
         await _fill_known_fields(page, form_fields, filled_answers)
+        await _capture_live_screenshot("after-known-fields")
         await _run_ai_assisted_fill(
             page,
             job=job,
             form_fields=form_fields,
             answers=filled_answers,
             allow_submit_click=False,
+            on_event=lambda msg: _progress_event(draft_id, msg),
+            on_action_executed=lambda action: _capture_live_screenshot(
+                f"action:{_describe_ai_action(action)}"
+            ),
         )
+        _progress_event(draft_id, "AI-assisted fill stage completed.")
         await page.screenshot(path=str(screenshot_path), full_page=True)
+        _progress_snapshot(draft_id, str(screenshot_path))
+        _progress_event(draft_id, "Captured review screenshot for final confirmation.")
 
         if click_submit:
+            _progress_event(draft_id, "Attempting final submit click.")
             await _click_submit_button(page)
-            return {"status": "submitted", "screenshot_path": str(screenshot_path)}
+            _progress_finish(draft_id, status="submitted")
+            return {
+                "status": "submitted",
+                "screenshot_path": str(screenshot_path),
+                "mode": run_mode,
+            }
 
-        return {"status": "ready_for_final_approval", "screenshot_path": str(screenshot_path)}
+        _progress_finish(draft_id, status="ready_for_final_approval")
+        return {
+            "status": "ready_for_final_approval",
+            "screenshot_path": str(screenshot_path),
+            "mode": run_mode,
+        }
     except asyncio.TimeoutError as exc:
+        _progress_event(draft_id, "Submission timed out.", level="error")
+        _progress_finish(draft_id, status="failed", error="Timed out loading or operating on the job page")
         raise ValueError("Timed out loading or operating on the job page") from exc
+    except BrowserUnavailableError as exc:
+        _progress_event(draft_id, str(exc), level="error")
+        _progress_finish(draft_id, status="failed", error=str(exc))
+        raise
     except Exception:
+        _progress_event(draft_id, "Submission engine failed.", level="error")
+        _progress_finish(draft_id, status="failed", error="Submission engine failed")
         logger.exception("Submission engine failed for draft_id=%s", draft_id)
         raise
     finally:
-        if page is not None:
+        if page is not None and close_page:
             await page.close()
-        if context is not None:
+        if context is not None and close_context:
             await context.close()
-        if browser is not None:
+        if browser is not None and close_browser:
             await browser.close()
         if playwright is not None:
             await playwright.stop()
 
 
-async def submit_application(draft_id: str, db_conn: sqlite3.Connection) -> dict[str, Any]:
-    return await _run_submission(draft_id, db_conn, click_submit=False)
+async def submit_application(
+    draft_id: str,
+    db_conn: sqlite3.Connection,
+    *,
+    use_visible_browser: bool = False,
+    pause_for_manual_input_seconds: int = 0,
+) -> dict[str, Any]:
+    return await _run_submission(
+        draft_id,
+        db_conn,
+        click_submit=False,
+        use_visible_browser=use_visible_browser,
+        pause_for_manual_input_seconds=pause_for_manual_input_seconds,
+    )
 
 
-async def confirm_submit_application(draft_id: str, db_conn: sqlite3.Connection) -> dict[str, Any]:
-    return await _run_submission(draft_id, db_conn, click_submit=True)
+async def confirm_submit_application(
+    draft_id: str,
+    db_conn: sqlite3.Connection,
+    *,
+    use_visible_browser: bool = False,
+) -> dict[str, Any]:
+    return await _run_submission(
+        draft_id,
+        db_conn,
+        click_submit=True,
+        use_visible_browser=use_visible_browser,
+        pause_for_manual_input_seconds=0,
+    )
