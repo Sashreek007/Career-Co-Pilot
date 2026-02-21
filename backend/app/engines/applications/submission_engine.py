@@ -13,7 +13,12 @@ from typing import Any
 from playwright.async_api import async_playwright
 
 from ...clients.gemini import get_gemini_client
-from ..selenium_cdp import bootstrap_selenium_cdp_session, close_selenium_session
+from ..selenium_cdp import (
+    bootstrap_selenium_cdp_session,
+    close_selenium_session,
+    load_browser_storage_state,
+    save_browser_storage_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -749,6 +754,29 @@ async def _run_submission(
     set_submission_guidance(draft_id, "")
     _progress_event(draft_id, f"Starting operator in {run_mode} mode.")
 
+    async def _restore_visible_state() -> None:
+        if context is None:
+            return
+        state = load_browser_storage_state("visible_session")
+        cookies = state.get("cookies")
+        if isinstance(cookies, list) and cookies:
+            try:
+                await context.add_cookies(cookies)
+                _progress_event(draft_id, "Loaded persisted browser login state.")
+            except Exception:
+                logger.debug("Could not restore persisted browser state", exc_info=True)
+
+    async def _persist_visible_state() -> None:
+        if context is None:
+            return
+        try:
+            cookies = await context.cookies()
+            if isinstance(cookies, list):
+                save_browser_storage_state({"cookies": cookies}, "visible_session")
+                _progress_event(draft_id, "Persisted browser login cookies.")
+        except Exception:
+            logger.debug("Could not persist visible browser state", exc_info=True)
+
     async def _capture_live_screenshot(label: str) -> None:
         if page is None:
             return
@@ -802,6 +830,7 @@ async def _run_submission(
                 context = await browser.new_context()
                 close_context = True
                 _progress_event(draft_id, "Created a new browser context.")
+            await _restore_visible_state()
             page = await context.new_page()
             close_page = False
         else:
@@ -894,6 +923,8 @@ async def _run_submission(
         logger.exception("Submission engine failed for draft_id=%s", draft_id)
         raise
     finally:
+        if use_visible_browser:
+            await _persist_visible_state()
         if page is not None and close_page:
             await page.close()
         if context is not None and close_context:

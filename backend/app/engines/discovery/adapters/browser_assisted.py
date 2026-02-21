@@ -8,7 +8,12 @@ from urllib.parse import quote_plus
 
 from playwright.async_api import async_playwright
 
-from ...selenium_cdp import bootstrap_selenium_cdp_session, close_selenium_session
+from ...selenium_cdp import (
+    bootstrap_selenium_cdp_session,
+    close_selenium_session,
+    load_browser_storage_state,
+    save_browser_storage_state,
+)
 from .base import JobSourceAdapter, RawJobData
 
 logger = logging.getLogger(__name__)
@@ -116,6 +121,21 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
         close_context = True
         selenium_session_delete_url: str | None = None
 
+        async def _restore_visible_state() -> None:
+            if context is None:
+                return
+            state = load_browser_storage_state("visible_session")
+            cookies = state.get("cookies")
+            if isinstance(cookies, list) and cookies:
+                await context.add_cookies(cookies)
+
+        async def _persist_visible_state() -> None:
+            if context is None:
+                return
+            cookies = await context.cookies()
+            if isinstance(cookies, list):
+                save_browser_storage_state({"cookies": cookies}, "visible_session")
+
         try:
             playwright = await async_playwright().start()
 
@@ -141,6 +161,7 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
                 else:
                     context = await browser.new_context()
                     close_context = True
+                await _restore_visible_state()
             else:
                 browser = await playwright.chromium.launch(headless=_browser_headless())
                 context_kwargs: dict[str, Any] = {}
@@ -197,6 +218,11 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
             logger.exception("User-assisted %s discovery failed for query=%s", self.site_name, query)
             return []
         finally:
+            if self.use_visible_browser:
+                try:
+                    await _persist_visible_state()
+                except Exception:
+                    logger.debug("Could not persist browser discovery state", exc_info=True)
             if page is not None:
                 await page.close()
             if context is not None and close_context:

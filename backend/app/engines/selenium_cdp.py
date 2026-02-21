@@ -1,8 +1,11 @@
 import json
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
+
+_STATE_DIR = Path(__file__).resolve().parents[2] / "data" / "browser_state"
 
 
 def _normalize_remote_url(endpoint: str) -> str:
@@ -54,6 +57,44 @@ def _request_json(
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _chrome_args() -> list[str]:
+    return [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
+
+
+def _state_file(key: str) -> Path:
+    safe = "".join(ch for ch in key if ch.isalnum() or ch in {"-", "_"}).strip()
+    if not safe:
+        safe = "default"
+    _STATE_DIR.mkdir(parents=True, exist_ok=True)
+    return _STATE_DIR / f"{safe}.json"
+
+
+def load_browser_storage_state(key: str = "visible_session") -> dict[str, Any]:
+    path = _state_file(key)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def save_browser_storage_state(state: dict[str, Any], key: str = "visible_session") -> None:
+    if not isinstance(state, dict):
+        return
+    path = _state_file(key)
+    try:
+        path.write_text(json.dumps(state), encoding="utf-8")
+    except Exception:
+        return
+
+
 def bootstrap_selenium_cdp_session(
     *,
     cdp_endpoint: str,
@@ -86,7 +127,7 @@ def bootstrap_selenium_cdp_session(
             "alwaysMatch": {
                 "browserName": "chrome",
                 "goog:chromeOptions": {
-                    "args": ["--no-sandbox", "--disable-dev-shm-usage"],
+                    "args": _chrome_args(),
                 },
             }
         }
