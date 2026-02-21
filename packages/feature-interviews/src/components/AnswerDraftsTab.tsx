@@ -1,5 +1,13 @@
 import type { InterviewKit } from '@career-copilot/core';
 
+const starBorderColors: Record<string, string> = {
+  situation: 'border-l-2 border-zinc-600',
+  task: 'border-l-2 border-blue-500/40',
+  action: 'border-l-2 border-blue-500',
+  result: 'border-l-2 border-green-500',
+  reflection: 'border-l-2 border-amber-500',
+};
+
 export function AnswerDraftsTab({ kit }: { kit: InterviewKit }) {
   if (kit.answerDrafts.length === 0) {
     return (
@@ -22,7 +30,7 @@ export function AnswerDraftsTab({ kit }: { kit: InterviewKit }) {
             )}
             <div className="space-y-3">
               {(['situation', 'task', 'action', 'result', 'reflection'] as const).map((key) => (
-                <div key={key}>
+                <div key={key} className={`pl-3 ${starBorderColors[key]}`}>
                   <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
                     {key}
                   </span>
