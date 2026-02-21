@@ -1,10 +1,56 @@
 import json
 import os
 import platform
+import socket
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse, urlunparse
 
 _STATE_DIR = Path(__file__).resolve().parents[2] / "data" / "browser_state"
+
+
+def normalize_cdp_endpoint(endpoint: str) -> str:
+    """
+    Normalize a CDP endpoint and resolve docker host aliases to numeric IPs.
+
+    Why:
+    - Some Chrome builds reject non-local host headers (for example
+      host.docker.internal) on /json/version, returning HTTP 500.
+    - Rewriting to an IP avoids host-header validation issues.
+    """
+    raw = str(endpoint or "").strip()
+    if not raw:
+        return raw
+    if "://" not in raw:
+        raw = f"http://{raw}"
+
+    parsed = urlparse(raw)
+    host = parsed.hostname
+    if not host:
+        return raw.rstrip("/")
+
+    resolved_host = host
+    if host in {"host.docker.internal", "gateway.docker.internal"}:
+        try:
+            ip = socket.gethostbyname(host)
+            if ip:
+                resolved_host = ip
+        except OSError:
+            resolved_host = host
+
+    if resolved_host == host:
+        return raw.rstrip("/")
+
+    port = parsed.port
+    netloc = f"{resolved_host}:{port}" if port is not None else resolved_host
+    if parsed.username:
+        auth = parsed.username
+        if parsed.password:
+            auth = f"{auth}:{parsed.password}"
+        netloc = f"{auth}@{netloc}"
+
+    rewritten = parsed._replace(netloc=netloc)
+    return urlunparse(rewritten).rstrip("/")
 
 
 def _state_file(key: str) -> Path:

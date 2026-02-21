@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..db.database import get_db
+from ..engines.discovery.ranker import compute_all_scores
 
 router = APIRouter(prefix="", tags=["jobs"])
 
@@ -76,6 +77,12 @@ def _parse_skill_items(raw_skills: Any) -> list[dict[str, Any]]:
     return parsed
 
 
+def _load_full_profile(db: sqlite3.Connection) -> dict[str, Any] | None:
+    """Load the full user profile row for live re-scoring."""
+    row = db.execute("SELECT * FROM user_profile WHERE id = 'local'").fetchone()
+    return dict(row) if row else None
+
+
 def _extract_profile_skill_forms(db: sqlite3.Connection) -> list[set[str]]:
     row = db.execute("SELECT skills_json FROM user_profile WHERE id = 'local'").fetchone()
     if row is None:
@@ -124,22 +131,66 @@ def _annotate_user_has(
 
 def _sanitize_description(value: str | None) -> str:
     text = unescape(str(value or ""))
-    if "<" not in text and ">" not in text:
-        return _clean_text(text)
 
-    no_scripts = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", text)
-    with_line_breaks = re.sub(r"(?i)<\s*br\s*/?>", "\n", no_scripts)
-    with_line_breaks = re.sub(r"(?i)</\s*(p|div|li|h[1-6])\s*>", "\n", with_line_breaks)
-    with_bullets = re.sub(r"(?i)<\s*li[^>]*>", "- ", with_line_breaks)
-    without_tags = re.sub(r"(?is)<[^>]+>", " ", with_bullets)
-    decoded = unescape(without_tags)
-    decoded = re.sub(r"[ \t\r\f\v]+", " ", decoded)
-    decoded = re.sub(r"\n[ \t]+", "\n", decoded)
-    decoded = re.sub(r"\n{3,}", "\n\n", decoded)
-    return decoded.strip()
+    # ── Strip HTML if present ─────────────────────────────────────────────
+    if "<" in text and ">" in text:
+        no_scripts = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", text)
+        with_line_breaks = re.sub(r"(?i)<\s*br\s*/?>", "\n", no_scripts)
+        with_line_breaks = re.sub(r"(?i)</\s*(p|div|li|h[1-6])\s*>", "\n", with_line_breaks)
+        with_bullets = re.sub(r"(?i)<\s*li[^>]*>", "\n- ", with_line_breaks)
+        text = re.sub(r"(?is)<[^>]+>", " ", with_bullets)
+        text = unescape(text)
+
+    # ── Normalise inline whitespace (keep newlines) ───────────────────────
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+
+    # ── Convert markdown-style formatting ────────────────────────────────
+    # **Bold** → strip the asterisks (keep text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    # *italic* → strip the asterisks
+    text = re.sub(r"\*(.+?)\*", r"\1", text)
+    # Lines starting with "* " → bullet "- "
+    text = re.sub(r"(?m)^[ \t]*\*[ \t]+", "- ", text)
+    # Lines starting with "• " (unicode bullet) → "- "
+    text = re.sub(r"(?m)^[ \t]*[•·–][ \t]+", "- ", text)
+    # Markdown headings "## Heading" → strip the hashes
+    text = re.sub(r"(?m)^#{1,6}[ \t]+", "", text)
+
+    # ── Sentence / paragraph boundary recovery ────────────────────────────
+    # When text was scraped as one wall (no newlines), inject breaks before
+    # common section headers so the output is readable.
+    _SECTION_HEADERS_RE = re.compile(
+        r"(?<!\n)(?<!\A)"           # not already at a line start
+        r"(?=(?:What you['']?ll (?:do|be doing)|"
+        r"About (?:the (?:role|job|team|company)|us)|"
+        r"Who (?:you are|we are)|"
+        r"Requirements?:|"
+        r"Qualifications?:|"
+        r"Responsibilities?:|"
+        r"What (?:we offer|you bring|you need)|"
+        r"(?:Key |Core )?Skills?:|"
+        r"Nice[- ]to[- ](?:have|haves?):?|"
+        r"Benefits?:|"
+        r"Compensation:|"
+        r"You (?:will|would|should|must)|"
+        r"The role|"
+        r"The team|"
+        r"Join us))",
+        re.IGNORECASE,
+    )
+    text = _SECTION_HEADERS_RE.sub("\n\n", text)
+
+    # ── Whitespace cleanup ────────────────────────────────────────────────
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
-def _row_to_job(row: sqlite3.Row, profile_skill_forms: list[set[str]] | None = None) -> dict[str, Any]:
+def _row_to_job(
+    row: sqlite3.Row,
+    profile_skill_forms: list[set[str]] | None = None,
+    full_profile: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     job = dict(row)
     raw_skills = job.get("skills_required_json")
     parsed_skills: Any = raw_skills
@@ -151,6 +202,27 @@ def _row_to_job(row: sqlite3.Row, profile_skill_forms: list[set[str]] | None = N
     profile_forms = profile_skill_forms or []
     job["skills_required_json"] = _annotate_user_has(parsed_skills, profile_forms)
     job["description"] = _sanitize_description(job.get("description"))
+
+    # ── Live re-score using the full profile (3 dimensions) ──────────────
+    if full_profile:
+        scores = compute_all_scores(job, full_profile)
+        job["match_score"] = scores["overall"]
+        job["skill_match"] = scores["skill_match"]
+        job["experience_match"] = scores["experience_match"]
+        job["role_match"] = scores["role_match"]
+        overall_pct = scores["overall"]
+        if overall_pct >= 0.7:
+            job["match_tier"] = "high"
+        elif overall_pct >= 0.4:
+            job["match_tier"] = "medium"
+        else:
+            job["match_tier"] = "low"
+    else:
+        # Fall back to stored scores (or defaults)
+        job.setdefault("skill_match", job.get("match_score", 0.0))
+        job.setdefault("experience_match", 0.75)
+        job.setdefault("role_match", 0.5)
+
     return job
 
 
@@ -282,26 +354,32 @@ def _source_from_url(source_url: str) -> str:
 @router.get("/jobs")
 def get_jobs(db: sqlite3.Connection = Depends(db_conn)):
     profile_skill_forms = _extract_profile_skill_forms(db)
+    full_profile = _load_full_profile(db)
     rows = db.execute(
         """
         SELECT * FROM jobs
         WHERE is_archived = 0
-        ORDER BY match_score DESC, discovered_at DESC
+          AND source != 'remotive'
+        ORDER BY discovered_at DESC
         """
     ).fetchall()
-    return [_row_to_job(row, profile_skill_forms) for row in rows]
+    jobs = [_row_to_job(row, profile_skill_forms, full_profile) for row in rows]
+    # Sort by live-computed match_score descending
+    jobs.sort(key=lambda j: float(j.get("match_score") or 0), reverse=True)
+    return jobs
 
 
 @router.get("/jobs/{job_id}")
 def get_job(job_id: str, db: sqlite3.Connection = Depends(db_conn)):
     profile_skill_forms = _extract_profile_skill_forms(db)
+    full_profile = _load_full_profile(db)
     row = db.execute(
         "SELECT * FROM jobs WHERE id = ? AND is_archived = 0",
         (job_id,),
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Job not found")
-    return _row_to_job(row, profile_skill_forms)
+    return _row_to_job(row, profile_skill_forms, full_profile)
 
 
 @router.post("/jobs/import-link")
@@ -312,16 +390,23 @@ def import_job_from_link(payload: ImportJobRequest, db: sqlite3.Connection = Dep
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise HTTPException(status_code=400, detail="source_url must be a valid http(s) URL")
     source_url = _normalize_source_url(source_url)
-    metadata = _fetch_html_metadata(source_url)
+
+    # If browser helper already provided rich fields, skip remote metadata fetch.
+    provided_title = _clean_text(payload.title)
+    provided_company = _clean_text(payload.company)
+    provided_description = _clean_text(payload.description)
+    should_fetch_metadata = not (provided_title and provided_company and provided_description)
+    metadata = _fetch_html_metadata(source_url) if should_fetch_metadata else {}
+
     linkedin_title, linkedin_company = _parse_linkedin_title_parts(source_url, metadata.get("title", ""))
 
-    title = _clean_text(payload.title)
+    title = provided_title
     if title.startswith("http://") or title.startswith("https://"):
         title = ""
     if not title:
         title = linkedin_title or metadata.get("title", "")
 
-    company = _clean_text(payload.company)
+    company = provided_company
     if company.startswith("http://") or company.startswith("https://"):
         company = ""
     if not company:
@@ -329,7 +414,7 @@ def import_job_from_link(payload: ImportJobRequest, db: sqlite3.Connection = Dep
     if not company:
         company = _company_from_host(source_url)
 
-    description = _clean_text(payload.description) or metadata.get("description", "")
+    description = provided_description or metadata.get("description", "")
 
     if not title:
         linkedin_match = re.search(r"/jobs/view/(\d+)", source_url)

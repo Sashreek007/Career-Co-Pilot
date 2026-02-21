@@ -13,10 +13,11 @@ from typing import Any
 from playwright.async_api import async_playwright
 
 from ...clients.gemini import get_gemini_client
-from ..selenium_cdp import (
+from ..browser_cdp import (
     get_chrome_executable_path,
     get_chrome_user_profile_dir,
     load_browser_storage_state,
+    normalize_cdp_endpoint,
     save_browser_storage_state,
 )
 
@@ -701,8 +702,8 @@ def _should_launch_headless() -> bool:
 def _cdp_endpoint() -> str:
     value = os.environ.get("APPLICATION_CDP_ENDPOINT", "").strip()
     if value:
-        return value
-    return "http://host.docker.internal:9222"
+        return normalize_cdp_endpoint(value)
+    return normalize_cdp_endpoint("http://host.docker.internal:9222")
 
 
 def _normalize_manual_pause_seconds(value: int | None) -> int:
@@ -860,8 +861,8 @@ async def _run_submission(
                 raise BrowserUnavailableError(
                     f"Could not connect to your Chrome browser at {cdp_endpoint}. "
                     "Start Chrome with remote debugging enabled:\n"
-                    "  macOS/Linux: google-chrome --remote-debugging-port=9222 --no-first-run\n"
-                    "  Windows:     chrome.exe --remote-debugging-port=9222\n"
+                    "  macOS/Linux: google-chrome --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --no-first-run\n"
+                    "  Windows:     chrome.exe --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0\n"
                     "If backend runs in Docker, set APPLICATION_CDP_ENDPOINT=http://host.docker.internal:9222. "
                     "If backend runs on your host directly, set APPLICATION_CDP_ENDPOINT=http://localhost:9222."
                 ) from cdp_exc

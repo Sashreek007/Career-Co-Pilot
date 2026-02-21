@@ -23,6 +23,9 @@ type BackendJob = {
   source_url?: string | null;
   match_score?: number | null;
   match_tier?: string | null;
+  skill_match?: number | null;
+  experience_match?: number | null;
+  role_match?: number | null;
   posted_date?: string | null;
   discovered_at?: string | null;
 };
@@ -127,12 +130,23 @@ function mapSkills(raw: BackendJob['skills_required_json'], userSkillForms: Set<
     .filter((item): item is Job['skills'][number] => item !== null);
 }
 
+function toPercent(value: number | null | undefined, fallback: number): number {
+  const v = Number(value ?? fallback);
+  return Math.round(Number.isFinite(v) ? Math.max(0, Math.min(1, v)) * 100 : fallback * 100);
+}
+
 function mapBackendJob(job: BackendJob, userSkillForms: Set<string>): Job {
   const rawScore = Number(job.match_score ?? 0);
   const clamped = Number.isFinite(rawScore) ? Math.max(0, Math.min(1, rawScore)) : 0;
   const overall = Math.round(clamped * 100);
   const tier = normaliseTier(job.match_tier, overall);
   const skills = mapSkills(job.skills_required_json, userSkillForms);
+
+  // Use real sub-scores from the backend when available.
+  // Fall back to the overall score only if the sub-scores are missing.
+  const skillMatch = toPercent(job.skill_match, clamped);
+  const experienceAlignment = toPercent(job.experience_match, 0.75);
+  const roleAlignment = toPercent(job.role_match, 0.5);
 
   return {
     id: String(job.id),
@@ -145,9 +159,9 @@ function mapBackendJob(job: BackendJob, userSkillForms: Set<string>): Job {
     matchScore: {
       overall,
       tier,
-      skillMatch: overall,
-      experienceAlignment: overall,
-      roleAlignment: overall,
+      skillMatch,
+      experienceAlignment,
+      roleAlignment,
       gapPenalty: Math.max(0, 100 - overall),
     },
     status: 'new',

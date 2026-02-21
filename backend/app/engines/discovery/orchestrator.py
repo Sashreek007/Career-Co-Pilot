@@ -6,9 +6,7 @@ from typing import Any
 from uuid import uuid4
 
 from .adapters.base import JobSourceAdapter
-from .adapters.browser_assisted import IndeedUserAssistedAdapter, LinkedInUserAssistedAdapter
 from .adapters.greenhouse import GreenhouseAdapter
-from .adapters.remotive import RemotiveAdapter
 from .deduplicator import deduplicate_jobs
 from .normalizer import normalize_jobs
 from .query_generator import generate_queries
@@ -17,12 +15,9 @@ from .ranker import apply_ranking
 logger = logging.getLogger(__name__)
 
 _SOURCE_ORDER = [
-    "remotive",
     "greenhouse",
-    "linkedin_browser",
-    "indeed_browser",
 ]
-_DEFAULT_SOURCES = ["remotive", "greenhouse"]
+_DEFAULT_SOURCES = ["greenhouse"]
 
 
 def _parse_json_array(raw: Any) -> list[Any]:
@@ -84,8 +79,9 @@ def _insert_jobs(db_conn: sqlite3.Connection, jobs: list[dict[str, Any]]) -> Non
         """
         INSERT OR IGNORE INTO jobs (
             id, title, company, location, remote, description, skills_required_json,
-            source, source_url, match_score, match_tier, posted_date, discovered_at, is_archived
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source, source_url, match_score, match_tier, skill_match, experience_match,
+            role_match, posted_date, discovered_at, is_archived
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -100,6 +96,9 @@ def _insert_jobs(db_conn: sqlite3.Connection, jobs: list[dict[str, Any]]) -> Non
                 job["source_url"],
                 job["match_score"],
                 job["match_tier"],
+                job.get("skill_match", job["match_score"]),
+                job.get("experience_match", 0.75),
+                job.get("role_match", 0.5),
                 job["posted_date"],
                 job["discovered_at"],
                 job["is_archived"],
@@ -132,14 +131,8 @@ def _build_adapters(
 ) -> dict[str, JobSourceAdapter]:
     adapters: dict[str, JobSourceAdapter] = {}
     for source in sources:
-        if source == "remotive":
-            adapters[source] = RemotiveAdapter()
-        elif source == "greenhouse":
+        if source == "greenhouse":
             adapters[source] = GreenhouseAdapter()
-        elif source == "linkedin_browser":
-            adapters[source] = LinkedInUserAssistedAdapter()
-        elif source == "indeed_browser":
-            adapters[source] = IndeedUserAssistedAdapter()
     return adapters
 
 
