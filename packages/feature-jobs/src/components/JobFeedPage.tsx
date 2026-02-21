@@ -7,6 +7,7 @@ import { JobDetail } from './JobDetail';
 import {
   type AssistedProgressEvent,
   type AssistedProgressResult,
+  type BrowserAssistedSessionProgressResult,
   type BrowserConnectionStatus,
   type BrowserDiscoverySource,
   type ChatMessage,
@@ -14,17 +15,22 @@ import {
   checkBrowserConnection,
   getChatMessages,
   getAssistedProgress,
+  getBrowserAssistedDiscoveryMessages,
+  getBrowserAssistedDiscoveryProgress,
+  getDiscoveryStatus,
   getProfile,
   importExternalJob,
+  postBrowserAssistedDiscoveryMessage,
   postChatMessage,
   prepareDraft,
-  runBrowserAssistedDiscovery,
+  startBrowserAssistedDiscoverySession,
   runAssistedConfirmSubmit,
   runAssistedFill,
 } from '@career-copilot/api';
 
 type LocationFilter = 'canada' | 'us' | 'remote' | 'all';
 type ActivityTab = 'browser' | 'agent' | 'chat';
+type DiscoveryTab = 'plan' | 'agent' | 'chat';
 
 const CANADA_HINTS = [
   'canada',
@@ -65,6 +71,8 @@ const MACOS_CHROME_DEBUG_COMMAND =
 const WINDOWS_CHROME_DEBUG_COMMAND =
   'chrome.exe --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --user-data-dir=%TEMP%\\career-copilot-cdp';
 const VERIFY_CDP_COMMAND = 'curl http://localhost:9222/json/version';
+const LOCATION_FILTER_STORAGE_KEY = 'career-copilot.jobs.location-filter';
+const DISCOVERY_RUN_STORAGE_KEY = 'career-copilot.discovery.run-id';
 
 interface AssistedReviewState {
   draftId: string;
@@ -135,13 +143,27 @@ function buildAutoDiscoveryPlan(filter: LocationFilter, profile: UserProfile | n
     role,
     locationHint,
     query,
-    sources: ['linkedin', 'indeed'],
+    sources: ['linkedin'],
   };
 }
 
+function loadPersistedLocationFilter(): LocationFilter {
+  if (typeof window === 'undefined') return 'canada';
+  const raw = window.localStorage.getItem(LOCATION_FILTER_STORAGE_KEY);
+  if (raw === 'canada' || raw === 'us' || raw === 'remote' || raw === 'all') {
+    return raw;
+  }
+  return 'canada';
+}
+
+function loadPersistedDiscoveryRunId(): string {
+  if (typeof window === 'undefined') return '';
+  return window.sessionStorage.getItem(DISCOVERY_RUN_STORAGE_KEY)?.trim() ?? '';
+}
+
 export function JobFeedPage() {
-  const { jobs, selectedJobId, isLoading, fetchJobs, selectJob, markInterested } = useJobsStore();
-  const [locationFilter, setLocationFilter] = useState<LocationFilter>('canada');
+  const { jobs, selectedJobId, isLoading, lastFetchedAt, fetchJobs, selectJob, markInterested } = useJobsStore();
+  const [locationFilter, setLocationFilter] = useState<LocationFilter>(() => loadPersistedLocationFilter());
   const [useVisibleBrowser, setUseVisibleBrowser] = useState(true);
   const [assistedReview, setAssistedReview] = useState<AssistedReviewState | null>(null);
   const [isSubmittingFinal, setIsSubmittingFinal] = useState(false);
@@ -153,6 +175,7 @@ export function JobFeedPage() {
   const [runningTab, setRunningTab] = useState<ActivityTab>('browser');
   const [reviewTab, setReviewTab] = useState<ActivityTab>('browser');
   const progressTimerRef = useRef<number | null>(null);
+  const discoveryTimerRef = useRef<number | null>(null);
   const noticeTimerRef = useRef<number | null>(null);
   const [notice, setNotice] = useState<NoticeState | null>(null);
   const [startApplyJobId, setStartApplyJobId] = useState<string | null>(null);
@@ -162,6 +185,20 @@ export function JobFeedPage() {
   const [browserStatus, setBrowserStatus] = useState<BrowserConnectionStatus | null>(null);
   const [isCheckingBrowser, setIsCheckingBrowser] = useState(false);
   const [autoDiscoveryPlan, setAutoDiscoveryPlan] = useState<AutoDiscoveryPlan | null>(null);
+  const [profileRoles, setProfileRoles] = useState<string[]>([]);
+  const [selectedRoleIndex, setSelectedRoleIndex] = useState<number>(0);
+  const [customQuery, setCustomQuery] = useState<string>('');
+  const [queryEdited, setQueryEdited] = useState<boolean>(false);
+  const [discoveryRunId, setDiscoveryRunId] = useState<string | null>(null);
+  const [discoveryProgress, setDiscoveryProgress] = useState<BrowserAssistedSessionProgressResult | null>(null);
+  const [discoveryMessages, setDiscoveryMessages] = useState<ChatMessage[]>([]);
+  const [discoveryChatInput, setDiscoveryChatInput] = useState('');
+  const [isSendingDiscoveryChat, setIsSendingDiscoveryChat] = useState(false);
+  const [discoveryTab, setDiscoveryTab] = useState<DiscoveryTab>('plan');
+  const discoveryChatEndRef = useRef<HTMLDivElement | null>(null);
+  const discoveryLastImportedRef = useRef<number>(0);
+  const discoveryLastSourceDoneRef = useRef<number>(0);
+  const discoveryPollErrorRef = useRef<number>(0);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [isSendingChat, setIsSendingChat] = useState(false);
@@ -184,8 +221,16 @@ export function JobFeedPage() {
   );
 
   useEffect(() => {
-    fetchJobs();
-  }, [fetchJobs]);
+    const hasJobs = jobs.length > 0;
+    const isFresh = lastFetchedAt !== null && Date.now() - lastFetchedAt < 45_000;
+    if (!hasJobs) {
+      void fetchJobs();
+      return;
+    }
+    if (!isFresh) {
+      void fetchJobs({ silent: true });
+    }
+  }, [fetchJobs, jobs.length, lastFetchedAt]);
 
   useEffect(() => {
     if (!filteredJobs.length) return;
@@ -198,6 +243,13 @@ export function JobFeedPage() {
     if (progressTimerRef.current !== null) {
       window.clearInterval(progressTimerRef.current);
       progressTimerRef.current = null;
+    }
+  };
+
+  const stopDiscoveryPolling = () => {
+    if (discoveryTimerRef.current !== null) {
+      window.clearInterval(discoveryTimerRef.current);
+      discoveryTimerRef.current = null;
     }
   };
 
@@ -225,7 +277,156 @@ export function JobFeedPage() {
     }, 1200);
   };
 
-  useEffect(() => () => stopProgressPolling(), []);
+  const pollDiscoveryOnce = async (runId: string) => {
+    const [progressResult, messagesResult] = await Promise.all([
+      getBrowserAssistedDiscoveryProgress(runId),
+      getBrowserAssistedDiscoveryMessages(runId),
+    ]);
+
+    if (!progressResult.error) {
+      discoveryPollErrorRef.current = 0;
+      const progress = progressResult.data;
+      setDiscoveryProgress(progress);
+
+      const completedSources = (progress.source_results ?? []).filter(
+        (item) => item.status === 'completed'
+      ).length;
+      const hasNewImported = progress.jobs_new > discoveryLastImportedRef.current;
+      const hasNewCompletedSource = completedSources > discoveryLastSourceDoneRef.current;
+
+      if (hasNewImported || hasNewCompletedSource) {
+        discoveryLastImportedRef.current = progress.jobs_new;
+        discoveryLastSourceDoneRef.current = completedSources;
+      }
+
+      if (progress.status === 'running') {
+        if (hasNewImported || hasNewCompletedSource) {
+          await fetchJobs();
+        }
+      }
+
+      if (progress.status === 'completed' || progress.status === 'failed' || progress.status === 'cancelled') {
+        stopDiscoveryPolling();
+        setIsDiscovering(false);
+        if (typeof window !== 'undefined') {
+          window.sessionStorage.removeItem(DISCOVERY_RUN_STORAGE_KEY);
+        }
+        await fetchJobs();
+        if (progress.status === 'completed') {
+          pushNotice(
+            `Auto-search complete: ${progress.jobs_found} extracted, ${progress.jobs_new} new jobs added to your feed.`,
+            'success'
+          );
+        } else if (progress.status === 'cancelled') {
+          pushNotice('Auto-search stopped by operator guidance.', 'info');
+        } else {
+          pushNotice(progress.error ?? 'Auto-search failed.', 'error');
+        }
+      }
+    } else {
+      discoveryPollErrorRef.current += 1;
+      const statusCode = Number(progressResult.status ?? 0);
+      const runMissing =
+        statusCode === 404 ||
+        (progressResult.error ?? '').toLowerCase().includes('not found');
+      if (discoveryPollErrorRef.current < 4 && !runMissing) {
+        return;
+      }
+      stopDiscoveryPolling();
+      setIsDiscovering(false);
+      setDiscoveryRunId(null);
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.removeItem(DISCOVERY_RUN_STORAGE_KEY);
+      }
+      pushNotice(progressResult.error, 'error');
+      return;
+    }
+
+    if (!messagesResult.error) {
+      setDiscoveryMessages(messagesResult.data.messages);
+      setTimeout(() => discoveryChatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 40);
+    }
+  };
+
+  const startDiscoveryPolling = (runId: string) => {
+    stopDiscoveryPolling();
+    discoveryPollErrorRef.current = 0;
+    void pollDiscoveryOnce(runId);
+    discoveryTimerRef.current = window.setInterval(() => {
+      void pollDiscoveryOnce(runId);
+    }, 1200);
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    const restoreDiscoveryRun = async () => {
+      let runId = loadPersistedDiscoveryRunId();
+      if (!runId) {
+        const statusResult = await getDiscoveryStatus();
+        if (!statusResult.error && statusResult.data.status === 'running' && statusResult.data.id) {
+          runId = statusResult.data.id;
+        }
+      }
+      if (!runId || cancelled) return;
+
+      const [progressResult, messagesResult] = await Promise.all([
+        getBrowserAssistedDiscoveryProgress(runId),
+        getBrowserAssistedDiscoveryMessages(runId),
+      ]);
+      if (cancelled || progressResult.error) return;
+      if (progressResult.data.status !== 'running') {
+        if (typeof window !== 'undefined') {
+          window.sessionStorage.removeItem(DISCOVERY_RUN_STORAGE_KEY);
+        }
+        return;
+      }
+
+      setDiscoveryRunId(runId);
+      setDiscoveryProgress(progressResult.data);
+      setIsDiscovering(true);
+      if (!messagesResult.error) {
+        setDiscoveryMessages(messagesResult.data.messages);
+      }
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.setItem(DISCOVERY_RUN_STORAGE_KEY, runId);
+      }
+      startDiscoveryPolling(runId);
+    };
+
+    void restoreDiscoveryRun();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(
+    () => () => {
+      stopProgressPolling();
+      stopDiscoveryPolling();
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(LOCATION_FILTER_STORAGE_KEY, locationFilter);
+  }, [locationFilter]);
+
+  const handleSendDiscoveryChat = async () => {
+    const runId = discoveryRunId;
+    const text = discoveryChatInput.trim();
+    if (!runId || !text || isSendingDiscoveryChat) return;
+    setIsSendingDiscoveryChat(true);
+    setDiscoveryChatInput('');
+    const result = await postBrowserAssistedDiscoveryMessage(runId, text);
+    setIsSendingDiscoveryChat(false);
+    if (result.error) {
+      pushNotice(result.error, 'error');
+      return;
+    }
+    setDiscoveryMessages(result.data.messages);
+    setTimeout(() => discoveryChatEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 40);
+  };
 
   const handleSendChat = async () => {
     const draftId = runningDraftId;
@@ -411,70 +612,103 @@ export function JobFeedPage() {
   };
 
   const openDiscoveryModal = async () => {
+    const persistedRunId = loadPersistedDiscoveryRunId();
+    if (!discoveryRunId && persistedRunId) {
+      setDiscoveryRunId(persistedRunId);
+      setIsDiscovering(true);
+      startDiscoveryPolling(persistedRunId);
+    }
     setShowDiscoveryModal(true);
     setIsPlanningDiscovery(true);
-    setAutoDiscoveryPlan(null);
+    const activeRunId = discoveryRunId || persistedRunId;
+    setDiscoveryTab(activeRunId ? 'agent' : 'plan');
+    if (!activeRunId) {
+      setAutoDiscoveryPlan(null);
+      setDiscoveryProgress(null);
+      setDiscoveryMessages([]);
+      setDiscoveryChatInput('');
+      setQueryEdited(false);
+    }
     await handleCheckBrowser();
     try {
       const profileResult = await getProfile();
       const profile = profileResult.error ? null : profileResult.data ?? null;
-      setAutoDiscoveryPlan(buildAutoDiscoveryPlan(locationFilter, profile));
+      const roles = (profile?.roleInterests ?? [])
+        .map((r: { title: string }) => r.title.trim())
+        .filter(Boolean);
+      setProfileRoles(roles);
+      setSelectedRoleIndex(0);
+      const plan = buildAutoDiscoveryPlan(locationFilter, profile);
+      setAutoDiscoveryPlan(plan);
+      // Only set the query if user hasn't manually edited it
+      setCustomQuery((prev) => (prev && queryEdited ? prev : plan.query));
     } catch {
-      setAutoDiscoveryPlan(buildAutoDiscoveryPlan(locationFilter, null));
+      const plan = buildAutoDiscoveryPlan(locationFilter, null);
+      setAutoDiscoveryPlan(plan);
+      setProfileRoles([]);
+      setSelectedRoleIndex(0);
+      setCustomQuery((prev) => (prev && queryEdited ? prev : plan.query));
     } finally {
       setIsPlanningDiscovery(false);
     }
   };
 
+  // When user picks a different role, auto-rebuild the query (unless manually edited)
+  const handleRoleChange = (index: number) => {
+    setSelectedRoleIndex(index);
+    if (!queryEdited && autoDiscoveryPlan) {
+      const role = profileRoles[index] ?? autoDiscoveryPlan.role;
+      const newQuery = `${role} ${autoDiscoveryPlan.locationHint}`.replace(/\s+/g, ' ').trim();
+      setCustomQuery(newQuery);
+      setAutoDiscoveryPlan((prev) => prev ? { ...prev, role, query: newQuery } : prev);
+    }
+  };
+
   const handleBrowserAssistedDiscovery = async () => {
     const plan = autoDiscoveryPlan ?? buildAutoDiscoveryPlan(locationFilter, null);
-    const query = plan.query.trim();
+    // Use the user's custom query if set, otherwise fall back to auto-built plan query
+    const query = (customQuery.trim() || plan.query).trim();
     if (!query) {
       pushNotice('Search query is required.', 'error');
       return;
     }
 
     setIsDiscovering(true);
-    let totalFound = 0;
-    let totalNew = 0;
-    let successCount = 0;
-    const errors: string[] = [];
-    for (const source of plan.sources) {
-      const result = await runBrowserAssistedDiscovery({
-        source,
-        query,
-        useVisibleBrowser,
-        waitSeconds: 8,
-        maxResults: 35,
-        minMatchScore: 0.0,
-      });
-      if (result.error) {
-        errors.push(`${source}: ${result.error}`);
-        continue;
-      }
-      successCount += 1;
-      totalFound += result.data.jobs_found;
-      totalNew += result.data.jobs_new;
-    }
-    setIsDiscovering(false);
+    setDiscoveryTab('agent');
+    setDiscoveryMessages([]);
+    setDiscoveryProgress(null);
+    discoveryLastImportedRef.current = 0;
+    discoveryLastSourceDoneRef.current = 0;
 
-    if (successCount === 0) {
-      pushNotice(errors[0] ?? 'AI browser search failed.', 'error');
+    const start = await startBrowserAssistedDiscoverySession({
+      query,
+      sources: plan.sources,
+      useVisibleBrowser,
+      waitSeconds: 6,
+      maxResults: 300,
+      minMatchScore: 0.0,
+    });
+    if (start.error || !start.data.run_id) {
+      setIsDiscovering(false);
+      pushNotice(start.error ?? 'Could not start AI browser search.', 'error');
       return;
     }
-
-    setShowDiscoveryModal(false);
-    await fetchJobs();
-    pushNotice(
-      `AI auto-search complete: ${totalNew} new jobs imported from ${totalFound} found across ${successCount} source(s).`,
-      'success'
-    );
-    if (errors.length) {
-      pushNotice(
-        `Some sources failed: ${errors.slice(0, 2).join(' | ')}`,
-        'info'
-      );
+    setDiscoveryRunId(start.data.run_id);
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.setItem(DISCOVERY_RUN_STORAGE_KEY, start.data.run_id);
     }
+    startDiscoveryPolling(start.data.run_id);
+  };
+
+  const handleStopDiscovery = async () => {
+    if (!discoveryRunId) return;
+    const result = await postBrowserAssistedDiscoveryMessage(discoveryRunId, 'stop');
+    if (result.error) {
+      pushNotice(result.error, 'error');
+      return;
+    }
+    setDiscoveryMessages(result.data.messages);
+    pushNotice('Stop requested. The agent will halt after the current browser step.', 'info');
   };
 
   const runningScreenshotUrl = withCacheBust(
@@ -482,6 +716,12 @@ export function JobFeedPage() {
     runningProgress?.updated_at
   );
   const reviewScreenshotUrl = withCacheBust(assistedReview?.screenshotUrl, assistedReview?.updatedAt);
+  const discoveryElapsedSeconds = discoveryProgress?.elapsed_seconds ?? 0;
+  const discoveryEstimatedSeconds = discoveryProgress?.estimated_duration_seconds ?? 0;
+  const discoveryRuntimeLabel =
+    discoveryEstimatedSeconds > 0
+      ? `${discoveryElapsedSeconds}s elapsed of ~${discoveryEstimatedSeconds}s`
+      : `${discoveryElapsedSeconds}s elapsed`;
 
   return (
     <div className="h-full flex flex-col">
@@ -513,11 +753,13 @@ export function JobFeedPage() {
             </label>
             <button
               onClick={() => void openDiscoveryModal()}
-              disabled={isDiscovering}
-              className="rounded-md bg-blue-700 px-3 py-1.5 text-xs font-medium text-zinc-100 transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-70"
-              title="AI agent auto-selects source/query, controls your browser, and imports matched jobs"
+              className="relative rounded-md bg-blue-700 px-3 py-1.5 text-xs font-medium text-zinc-100 transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-70"
+              title="AI agent searches LinkedIn and imports matched jobs"
             >
-              {isDiscovering ? 'Searching…' : 'AI Auto Search'}
+              {isDiscovering && (
+                <span className="absolute -right-1 -top-1 h-2.5 w-2.5 animate-pulse rounded-full bg-red-400" />
+              )}
+              {isDiscovering ? 'View Search' : 'AI Auto Search'}
             </button>
             <button
               onClick={() => setShowImportModal(true)}
@@ -534,7 +776,7 @@ export function JobFeedPage() {
         <SplitPane
           leftWidth="w-80"
           left={
-            isLoading ? (
+            isLoading && filteredJobs.length === 0 ? (
               <div className="flex items-center justify-center h-40 text-sm text-zinc-500">
                 Loading jobs…
               </div>
@@ -634,12 +876,25 @@ export function JobFeedPage() {
       {showDiscoveryModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-black/70" onClick={() => setShowDiscoveryModal(false)} />
-          <div className="relative w-full max-w-lg rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
+          <div className="relative w-full max-w-2xl rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
             <div className="border-b border-zinc-800 px-5 py-4">
-              <h3 className="text-base font-semibold text-zinc-100">AI Auto Search</h3>
-              <p className="mt-1 text-sm text-zinc-400">
-                Agent auto-picks source and query from your profile, then operates your visible browser.
-              </p>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-semibold text-zinc-100">AI Auto Search</h3>
+                  <p className="mt-1 text-sm text-zinc-400">
+                    Pick a role and query, then the agent searches LinkedIn and imports matched jobs.
+                  </p>
+                </div>
+                {isDiscovering && (
+                  <button
+                    onClick={() => void handleStopDiscovery()}
+                    className="shrink-0 flex items-center gap-1.5 rounded-md bg-red-700 px-3 py-1.5 text-xs font-medium text-red-100 hover:bg-red-600"
+                  >
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-300" />
+                    Stop Search
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="border-b border-zinc-800 px-5 py-3">
@@ -730,40 +985,260 @@ export function JobFeedPage() {
               )}
             </div>
 
+            <div className="border-b border-zinc-800 px-5 py-3">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setDiscoveryTab('plan')}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium ${
+                    discoveryTab === 'plan'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                  }`}
+                >
+                  Plan
+                </button>
+                <button
+                  onClick={() => setDiscoveryTab('agent')}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium ${
+                    discoveryTab === 'agent'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                  }`}
+                >
+                  Agent Log
+                </button>
+                <button
+                  onClick={() => setDiscoveryTab('chat')}
+                  className={`rounded-md px-3 py-1.5 text-xs font-medium ${
+                    discoveryTab === 'chat'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
+                  }`}
+                >
+                  Chat
+                </button>
+                {isDiscovering && (
+                  <button
+                    onClick={() => void handleStopDiscovery()}
+                    className="ml-1 flex items-center gap-1.5 rounded-md bg-red-900/80 px-2.5 py-1.5 text-xs font-medium text-red-200 hover:bg-red-800"
+                  >
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-400" />
+                    Stop
+                  </button>
+                )}
+                <span className="ml-auto text-[11px] text-zinc-500">
+                  {discoveryProgress
+                    ? `${discoveryProgress.status} • ${discoveryRuntimeLabel}`
+                    : isDiscovering
+                      ? 'running'
+                      : 'idle'}
+                </span>
+              </div>
+            </div>
+
             <div className="space-y-4 px-5 py-4">
-              {isPlanningDiscovery ? (
-                <div className="rounded-md border border-zinc-700 bg-zinc-950/70 px-3 py-2 text-xs text-zinc-400">
-                  Building AI search plan from your profile…
-                </div>
-              ) : autoDiscoveryPlan ? (
-                <div className="space-y-2 rounded-md border border-zinc-700 bg-zinc-950/70 p-3 text-sm">
-                  <p className="text-zinc-300">
-                    <span className="text-zinc-500">Role:</span> {autoDiscoveryPlan.role}
-                  </p>
-                  <p className="text-zinc-300">
-                    <span className="text-zinc-500">Location Hint:</span> {autoDiscoveryPlan.locationHint}
-                  </p>
-                  <p className="text-zinc-300">
-                    <span className="text-zinc-500">Query:</span> {autoDiscoveryPlan.query}
-                  </p>
-                  <p className="text-zinc-300">
-                    <span className="text-zinc-500">Sources:</span>{' '}
-                    {autoDiscoveryPlan.sources.join(', ')}
-                  </p>
+              {discoveryTab === 'plan' ? (
+                <>
+                  {isPlanningDiscovery ? (
+                    <div className="rounded-md border border-zinc-700 bg-zinc-950/70 px-3 py-2 text-xs text-zinc-400">
+                      Loading your profile roles…
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {/* Role selector */}
+                      <label className="block">
+                        <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
+                          Target Role
+                        </span>
+                        {profileRoles.length > 0 ? (
+                          <select
+                            value={selectedRoleIndex}
+                            onChange={(e) => handleRoleChange(Number(e.target.value))}
+                            disabled={isDiscovering}
+                            className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 disabled:opacity-60"
+                          >
+                            {profileRoles.map((role, idx) => (
+                              <option key={idx} value={idx}>
+                                {role}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <div className="rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-400">
+                            {autoDiscoveryPlan?.role ?? 'software engineer'}
+                            <span className="ml-2 text-[11px] text-zinc-500">(add roles in your profile to unlock selector)</span>
+                          </div>
+                        )}
+                      </label>
+
+                      {/* Editable query */}
+                      <label className="block">
+                        <div className="mb-1 flex items-center justify-between">
+                          <span className="text-xs font-medium uppercase tracking-wide text-zinc-500">
+                            LinkedIn Search Query
+                          </span>
+                          {queryEdited && (
+                            <button
+                              onClick={() => {
+                                const plan = autoDiscoveryPlan;
+                                if (plan) {
+                                  const autoQ = `${profileRoles[selectedRoleIndex] ?? plan.role} ${plan.locationHint}`.replace(/\s+/g, ' ').trim();
+                                  setCustomQuery(autoQ);
+                                }
+                                setQueryEdited(false);
+                              }}
+                              className="text-[11px] text-blue-400 hover:text-blue-300"
+                            >
+                              Reset to auto
+                            </button>
+                          )}
+                        </div>
+                        <input
+                          type="text"
+                          value={customQuery}
+                          onChange={(e) => {
+                            setCustomQuery(e.target.value);
+                            setQueryEdited(true);
+                          }}
+                          disabled={isDiscovering}
+                          placeholder="e.g. software engineer toronto"
+                          className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-60"
+                        />
+                        <p className="mt-1 text-[11px] text-zinc-500">
+                          This is sent directly to LinkedIn Jobs search. Location hint: <span className="text-zinc-400">{autoDiscoveryPlan?.locationHint ?? '—'}</span>
+                        </p>
+                      </label>
+                    </div>
+                  )}
+
+                  <div className="grid gap-2 md:grid-cols-2">
+                    {(discoveryProgress?.source_results ?? autoDiscoveryPlan?.sources ?? []).map((item) => {
+                      const source =
+                        typeof item === 'string'
+                          ? item
+                          : String((item as { source?: string }).source ?? 'unknown');
+                      const status =
+                        typeof item === 'string'
+                          ? 'pending'
+                          : String((item as { status?: string }).status ?? 'pending');
+                      const jobsFound =
+                        typeof item === 'string'
+                          ? 0
+                          : Number((item as { jobs_found?: number }).jobs_found ?? 0);
+                      const jobsNew =
+                        typeof item === 'string'
+                          ? 0
+                          : Number((item as { jobs_new?: number }).jobs_new ?? 0);
+                      const error =
+                        typeof item === 'string'
+                          ? null
+                          : (item as { error?: string | null }).error ?? null;
+                      return (
+                        <div key={source} className="rounded-md border border-zinc-800 bg-zinc-950/60 p-2.5 text-xs">
+                          <p className="font-medium uppercase tracking-wide text-zinc-200">{source}</p>
+                          <p className="mt-1 text-zinc-400">
+                            Status: <span className="text-zinc-200">{status}</span>
+                          </p>
+                          <p className="text-zinc-400">
+                            Extracted: <span className="text-zinc-200">{jobsFound}</span> • Imported:{' '}
+                            <span className="text-zinc-200">{jobsNew}</span>
+                          </p>
+                          {error && <p className="mt-1 text-red-400/90">{error}</p>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              ) : discoveryTab === 'agent' ? (
+                <div className="max-h-[44vh] overflow-auto rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2">
+                  {(discoveryProgress?.events ?? []).length === 0 ? (
+                    <p className="py-3 text-xs text-zinc-500">Waiting for agent activity…</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {(discoveryProgress?.events ?? []).map((event, idx) => (
+                        <div key={`${event.at}-${idx}`} className="rounded border border-zinc-800 px-2 py-1.5 text-xs">
+                          <p className="text-zinc-200">{event.message}</p>
+                          <p className="mt-1 text-[10px] uppercase tracking-wide text-zinc-500">
+                            {event.level} • {event.at}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ) : (
-                <div className="rounded-md border border-zinc-700 bg-zinc-950/70 px-3 py-2 text-xs text-zinc-400">
-                  Could not build profile-based plan, using fallback query.
+                <div className="flex flex-col" style={{ height: '44vh' }}>
+                  <div className="flex-1 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950 p-3 space-y-3">
+                    {discoveryMessages.length === 0 ? (
+                      <p className="py-4 text-center text-xs text-zinc-500">
+                        Send guidance while the search is running. Example: "skip indeed", "focus internships", "stop".
+                      </p>
+                    ) : (
+                      discoveryMessages.map((msg, idx) => (
+                        <div
+                          key={`${msg.at}-${idx}`}
+                          className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                        >
+                          <div
+                            className={`max-w-[82%] rounded-2xl px-3 py-2 text-sm leading-relaxed ${
+                              msg.role === 'user'
+                                ? 'rounded-br-sm bg-blue-600 text-white'
+                                : 'rounded-bl-sm border border-zinc-700 bg-zinc-800 text-zinc-100'
+                            }`}
+                          >
+                            {msg.role === 'ai' && (
+                              <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-zinc-400">
+                                AI Agent
+                              </p>
+                            )}
+                            <p className="whitespace-pre-wrap">{msg.text}</p>
+                            <p className={`mt-1 text-[10px] ${msg.role === 'user' ? 'text-blue-200' : 'text-zinc-500'}`}>
+                              {new Date(msg.at).toLocaleTimeString()}
+                            </p>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                    <div ref={discoveryChatEndRef} />
+                  </div>
+                  <div className="mt-2 flex items-end gap-2">
+                    <textarea
+                      value={discoveryChatInput}
+                      onChange={(event) => setDiscoveryChatInput(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' && !event.shiftKey) {
+                          event.preventDefault();
+                          void handleSendDiscoveryChat();
+                        }
+                      }}
+                      placeholder="Send guidance to the running agent…"
+                      rows={2}
+                      className="flex-1 resize-none rounded-xl border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    <button
+                      onClick={() => void handleSendDiscoveryChat()}
+                      disabled={isSendingDiscoveryChat || !discoveryChatInput.trim()}
+                      className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isSendingDiscoveryChat ? '…' : 'Send'}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
             <div className="flex items-center justify-end gap-2 border-t border-zinc-800 px-5 py-4">
               <button
                 onClick={() => setShowDiscoveryModal(false)}
-                disabled={isDiscovering}
                 className="rounded-md bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-70"
               >
-                Cancel
+                {isDiscovering ? 'Close' : 'Cancel'}
+              </button>
+              <button
+                onClick={() => setDiscoveryTab('chat')}
+                disabled={!isDiscovering && !discoveryRunId}
+                className="rounded-md bg-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-100 hover:bg-zinc-600 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                Chat with Agent
               </button>
               <button
                 onClick={() => void handleBrowserAssistedDiscovery()}

@@ -24,8 +24,29 @@ export type {
   ChatThreadResult,
   PostChatMessageResult,
 } from './drafts';
-export { runBrowserAssistedDiscovery, checkBrowserConnection } from './discovery';
-export type { BrowserAssistedDiscoveryInput, BrowserAssistedDiscoveryResult, BrowserDiscoverySource, BrowserConnectionStatus } from './discovery';
+export {
+  runBrowserAssistedDiscovery,
+  checkBrowserConnection,
+  startBrowserAssistedDiscoverySession,
+  getBrowserAssistedDiscoveryProgress,
+  getBrowserAssistedDiscoveryMessages,
+  postBrowserAssistedDiscoveryMessage,
+  getDiscoveryStatus,
+} from './discovery';
+export type {
+  BrowserAssistedDiscoveryInput,
+  BrowserAssistedDiscoveryResult,
+  BrowserAssistedSessionStartInput,
+  BrowserAssistedSessionStartResult,
+  BrowserAssistedSessionProgressResult,
+  BrowserAssistedDiscoveryProgressEvent,
+  BrowserAssistedSourceProgress,
+  BrowserAssistedChatThreadResult,
+  BrowserAssistedPostChatResult,
+  BrowserDiscoverySource,
+  BrowserConnectionStatus,
+  DiscoveryStatusResult,
+} from './discovery';
 export { getInterviewKit, getInterviewKits } from './interviews';
 export {
   getProfiles,

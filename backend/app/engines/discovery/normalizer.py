@@ -34,7 +34,11 @@ def _extract_skills(description: str) -> list[dict[str, Any]]:
 
 
 def normalize_job(raw: RawJobData) -> dict[str, Any]:
-    job_id_source = f"{raw.title}|{raw.company}|{raw.location}".strip().lower()
+    source_url = str(raw.source_url or "").strip().lower()
+    if source_url:
+        job_id_source = f"{source_url}|{raw.title}|{raw.company}|{raw.location}".strip().lower()
+    else:
+        job_id_source = f"{raw.title}|{raw.company}|{raw.location}".strip().lower()
     job_id = hashlib.sha256(job_id_source.encode("utf-8")).hexdigest()[:16]
     now = datetime.utcnow().isoformat()
     is_remote = "remote" in raw.location.lower() or "remote" in raw.description.lower()

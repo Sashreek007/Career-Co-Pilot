@@ -79,8 +79,9 @@ def _insert_jobs(db_conn: sqlite3.Connection, jobs: list[dict[str, Any]]) -> Non
         """
         INSERT OR IGNORE INTO jobs (
             id, title, company, location, remote, description, skills_required_json,
-            source, source_url, match_score, match_tier, posted_date, discovered_at, is_archived
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source, source_url, match_score, match_tier, skill_match, experience_match,
+            role_match, posted_date, discovered_at, is_archived
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -95,6 +96,9 @@ def _insert_jobs(db_conn: sqlite3.Connection, jobs: list[dict[str, Any]]) -> Non
                 job["source_url"],
                 job["match_score"],
                 job["match_tier"],
+                job.get("skill_match", job["match_score"]),
+                job.get("experience_match", 0.75),
+                job.get("role_match", 0.5),
                 job["posted_date"],
                 job["discovered_at"],
                 job["is_archived"],

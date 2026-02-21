@@ -117,6 +117,7 @@ def init_db(db_path: str | Path | None = None) -> None:
     conn = get_db(db_path)
     try:
         conn.executescript(SCHEMA_SQL)
+        _ensure_jobs_columns(conn)
         _ensure_user_profile_columns(conn)
         _ensure_settings_columns(conn)
         conn.execute(
@@ -129,6 +130,24 @@ def init_db(db_path: str | Path | None = None) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _ensure_jobs_columns(conn) -> None:
+    """Add columns that were added after the initial schema deployment."""
+    existing = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(jobs)").fetchall()
+        if len(row) > 1
+    }
+    required_defs = [
+        ("skill_match", "REAL DEFAULT 0.0"),
+        ("experience_match", "REAL DEFAULT 0.75"),
+        ("role_match", "REAL DEFAULT 0.5"),
+    ]
+    for column, definition in required_defs:
+        if column in existing:
+            continue
+        conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
 
 
 def _ensure_user_profile_columns(conn) -> None:
