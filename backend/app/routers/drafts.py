@@ -30,12 +30,30 @@ class UpdateDraftRequest(BaseModel):
     filled_answers_json: dict[str, Any]
 
 
+class AssistedFillRequest(BaseModel):
+    confirm_user_assisted: bool = False
+    acknowledge_platform_terms: bool = False
+
+
+class AssistedFinalSubmitRequest(BaseModel):
+    confirm_user_assisted: bool = False
+    acknowledge_platform_terms: bool = False
+    confirm_final_submit: bool = False
+
+
 def db_conn():
     conn = get_db()
     try:
         yield conn
     finally:
         conn.close()
+
+
+def _assert_assisted_consent(confirm_user_assisted: bool, acknowledge_platform_terms: bool) -> None:
+    if not confirm_user_assisted:
+        raise HTTPException(status_code=400, detail="User-assisted mode confirmation is required")
+    if not acknowledge_platform_terms:
+        raise HTTPException(status_code=400, detail="Platform terms acknowledgement is required")
 
 
 def _row_to_draft(row: sqlite3.Row) -> dict[str, Any]:
@@ -150,10 +168,19 @@ def reject_draft(draft_id: str, db: sqlite3.Connection = Depends(db_conn)):
 
 
 @router.post("/{draft_id}/submit")
-async def submit_draft(draft_id: str, db: sqlite3.Connection = Depends(db_conn)):
+async def submit_draft(
+    draft_id: str,
+    payload: AssistedFillRequest,
+    db: sqlite3.Connection = Depends(db_conn),
+):
+    _assert_assisted_consent(payload.confirm_user_assisted, payload.acknowledge_platform_terms)
     try:
         result = await submit_application(draft_id, db)
-        return result
+        return {
+            "status": result.get("status", "ready_for_final_approval"),
+            "screenshot_path": result.get("screenshot_path"),
+            "requires_explicit_final_submit": True,
+        }
     except RateLimitError as err:
         raise HTTPException(status_code=429, detail=str(err)) from err
     except ValueError as err:
@@ -161,7 +188,14 @@ async def submit_draft(draft_id: str, db: sqlite3.Connection = Depends(db_conn))
 
 
 @router.post("/{draft_id}/confirm-submit")
-async def confirm_submit_draft(draft_id: str, db: sqlite3.Connection = Depends(db_conn)):
+async def confirm_submit_draft(
+    draft_id: str,
+    payload: AssistedFinalSubmitRequest,
+    db: sqlite3.Connection = Depends(db_conn),
+):
+    _assert_assisted_consent(payload.confirm_user_assisted, payload.acknowledge_platform_terms)
+    if not payload.confirm_final_submit:
+        raise HTTPException(status_code=400, detail="Final submit confirmation is required")
     try:
         result = await confirm_submit_application(draft_id, db)
     except RateLimitError as err:

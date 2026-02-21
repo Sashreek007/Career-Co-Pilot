@@ -1,6 +1,6 @@
 import type { Job } from '@career-copilot/core';
 import { MatchBadge } from '@career-copilot/ui';
-import { CheckCircle2, XCircle, MapPin, Wifi, FileText, Send, Star } from 'lucide-react';
+import { CheckCircle2, XCircle, MapPin, Wifi, FileText, Send, Star, ExternalLink } from 'lucide-react';
 
 interface JobDetailProps {
   job: Job;
@@ -49,10 +49,25 @@ export function JobDetail({ job, onPrepareResume, onPrepareApplication, onMarkIn
           <button
             onClick={() => onPrepareApplication(job.id)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-zinc-700 hover:bg-zinc-600 text-zinc-100 text-xs font-medium transition-colors"
+            title="User-assisted two-step flow with explicit final confirmation"
           >
             <Send className="w-3.5 h-3.5" />
-            Prepare Application
+            Assisted Apply
           </button>
+          <a
+            href={job.sourceUrl || '#'}
+            target="_blank"
+            rel="noreferrer"
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              job.sourceUrl
+                ? 'bg-zinc-700 hover:bg-zinc-600 text-zinc-100'
+                : 'bg-zinc-800 text-zinc-500 pointer-events-none'
+            }`}
+            title="Open original job posting"
+          >
+            <ExternalLink className="w-3.5 h-3.5" />
+            Open Job Page
+          </a>
           <button
             onClick={() => onMarkInterested(job.id)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-colors"

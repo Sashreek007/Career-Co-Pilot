@@ -3,6 +3,7 @@ import { SplitPane, PageHeader } from '@career-copilot/ui';
 import { useJobsStore } from '../state/useJobsStore';
 import { JobList } from './JobList';
 import { JobDetail } from './JobDetail';
+import { approveDraft, prepareDraft, runAssistedConfirmSubmit, runAssistedFill } from '@career-copilot/api';
 
 export function JobFeedPage() {
   const { jobs, selectedJobId, isLoading, fetchJobs, selectJob, markInterested } = useJobsStore();
@@ -17,9 +18,72 @@ export function JobFeedPage() {
     console.log('[stub] Prepare resume for job', jobId);
   };
 
+  const runAssistedApplicationFlow = async (jobId: string) => {
+    const targetJob = jobs.find((job) => job.id === jobId);
+    if (!targetJob) {
+      window.alert('Job not found.');
+      return;
+    }
+
+    const startAssistedFlow = window.confirm(
+      [
+        'Assisted Apply opens your browser and runs in user-assisted mode.',
+        'You stay in control, and final submission requires a second explicit confirmation.',
+        '',
+        `Source: ${targetJob.source}`,
+        `URL: ${targetJob.sourceUrl || 'not available'}`,
+        '',
+        'Continue?',
+      ].join('\n')
+    );
+    if (!startAssistedFlow) {
+      return;
+    }
+
+    const prepared = await prepareDraft(jobId);
+    if (prepared.error || !prepared.data.id) {
+      window.alert(prepared.error ?? 'Failed to prepare draft.');
+      return;
+    }
+
+    const approved = await approveDraft(prepared.data.id);
+    if (approved.error) {
+      window.alert(approved.error);
+      return;
+    }
+
+    const fillResult = await runAssistedFill(prepared.data.id);
+    if (fillResult.error) {
+      window.alert(fillResult.error);
+      return;
+    }
+
+    const finalConfirmation = window.confirm(
+      [
+        'Draft fields were filled in assisted mode.',
+        fillResult.data.screenshot_path
+          ? `Review artifact: ${fillResult.data.screenshot_path}`
+          : 'No screenshot path returned.',
+        '',
+        'Click OK only if you want to perform final submit now.',
+      ].join('\n')
+    );
+    if (!finalConfirmation) {
+      window.alert(`Draft ${prepared.data.id} is approved and ready for final submit later.`);
+      return;
+    }
+
+    const submitted = await runAssistedConfirmSubmit(prepared.data.id);
+    if (submitted.error) {
+      window.alert(submitted.error);
+      return;
+    }
+
+    window.alert(`Application submitted with status: ${submitted.data.status}`);
+  };
+
   const handlePrepareApplication = (jobId: string) => {
-    // stub — navigate to applications
-    console.log('[stub] Prepare application for job', jobId);
+    void runAssistedApplicationFlow(jobId);
   };
 
   return (

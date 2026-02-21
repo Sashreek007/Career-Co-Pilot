@@ -10,15 +10,12 @@ from ..engines.discovery.orchestrator import run_discovery
 
 router = APIRouter(prefix="/discovery", tags=["discovery"])
 _DEFAULT_SOURCES = ["remotive", "greenhouse"]
-_BROWSER_SOURCES = {"linkedin_browser", "indeed_browser"}
-_SUPPORTED_SOURCES = ["remotive", "greenhouse", "linkedin_browser", "indeed_browser"]
+_SUPPORTED_SOURCES = ["remotive", "greenhouse"]
 
 
 class DiscoveryRunRequest(BaseModel):
     sources: list[str] | None = None
-    user_assisted: bool = False
     max_results_per_query: int = 20
-    browser_query_limit: int = 2
 
 
 def _effective_sources(request: DiscoveryRunRequest) -> list[str]:
@@ -28,8 +25,6 @@ def _effective_sources(request: DiscoveryRunRequest) -> list[str]:
     for source in candidate:
         normalized = str(source).strip().lower()
         if normalized not in _SUPPORTED_SOURCES:
-            continue
-        if normalized in _BROWSER_SOURCES and not request.user_assisted:
             continue
         if normalized in seen:
             continue
@@ -45,9 +40,7 @@ def _run_discovery_job(request: DiscoveryRunRequest) -> None:
             run_discovery(
                 conn,
                 sources=request.sources,
-                user_assisted=request.user_assisted,
                 max_results_per_query=request.max_results_per_query,
-                browser_query_limit=request.browser_query_limit,
             )
         )
     finally:
@@ -66,7 +59,7 @@ def trigger_discovery(
         "queued": True,
         "status": "running",
         "sources": effective_sources,
-        "user_assisted": payload.user_assisted,
+        "mode": "compliant_sources_only",
         "started_at": datetime.utcnow().isoformat(),
     }
 
@@ -95,5 +88,8 @@ def get_discovery_sources():
     return {
         "defaults": _DEFAULT_SOURCES,
         "supported": _SUPPORTED_SOURCES,
-        "note": "Browser sources are user-assisted and should be run with user_assisted=true.",
+        "note": (
+            "Discovery is limited to approved/public-source adapters. "
+            "LinkedIn/Indeed are excluded from bulk discovery."
+        ),
     }

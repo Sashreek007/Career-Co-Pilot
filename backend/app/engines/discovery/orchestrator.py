@@ -6,7 +6,6 @@ from typing import Any
 from uuid import uuid4
 
 from .adapters.base import JobSourceAdapter
-from .adapters.browser_assisted import IndeedUserAssistedAdapter, LinkedInUserAssistedAdapter
 from .adapters.greenhouse import GreenhouseAdapter
 from .adapters.remotive import RemotiveAdapter
 from .deduplicator import deduplicate_jobs
@@ -19,11 +18,8 @@ logger = logging.getLogger(__name__)
 _SOURCE_ORDER = [
     "remotive",
     "greenhouse",
-    "linkedin_browser",
-    "indeed_browser",
 ]
 _DEFAULT_SOURCES = ["remotive", "greenhouse"]
-_BROWSER_SOURCES = {"linkedin_browser", "indeed_browser"}
 
 
 def _parse_json_array(raw: Any) -> list[Any]:
@@ -113,7 +109,6 @@ def _insert_jobs(db_conn: sqlite3.Connection, jobs: list[dict[str, Any]]) -> Non
 
 def _resolve_sources(
     requested_sources: list[str] | None,
-    user_assisted: bool,
 ) -> list[str]:
     candidate = requested_sources or _DEFAULT_SOURCES
     seen: set[str] = set()
@@ -121,8 +116,6 @@ def _resolve_sources(
     for source in candidate:
         normalized = str(source).strip().lower()
         if normalized not in _SOURCE_ORDER:
-            continue
-        if normalized in _BROWSER_SOURCES and not user_assisted:
             continue
         if normalized in seen:
             continue
@@ -140,10 +133,6 @@ def _build_adapters(
             adapters[source] = RemotiveAdapter()
         elif source == "greenhouse":
             adapters[source] = GreenhouseAdapter()
-        elif source == "linkedin_browser":
-            adapters[source] = LinkedInUserAssistedAdapter()
-        elif source == "indeed_browser":
-            adapters[source] = IndeedUserAssistedAdapter()
     return adapters
 
 
@@ -151,14 +140,10 @@ async def _collect_raw_jobs(
     adapters: dict[str, JobSourceAdapter],
     queries: list[str],
     max_results_per_query: int,
-    browser_query_limit: int,
 ) -> list[Any]:
     collected = []
-    for source, adapter in adapters.items():
-        source_queries = queries
-        if source in _BROWSER_SOURCES:
-            source_queries = queries[: max(browser_query_limit, 1)]
-        for query in source_queries:
+    for _, adapter in adapters.items():
+        for query in queries:
             jobs = await adapter.search(query, max_results=max_results_per_query)
             collected.extend(jobs)
     return collected
@@ -169,11 +154,9 @@ async def run_discovery(
     user_profile: dict[str, Any] | None = None,
     sources: list[str] | None = None,
     *,
-    user_assisted: bool = False,
     max_results_per_query: int = 20,
-    browser_query_limit: int = 2,
 ) -> dict[str, Any]:
-    resolved_sources = _resolve_sources(sources, user_assisted=user_assisted)
+    resolved_sources = _resolve_sources(sources)
     source_label = ",".join(resolved_sources)
     run_id = f"discovery-{uuid4().hex[:10]}"
     started_at = datetime.utcnow().isoformat()
@@ -222,7 +205,6 @@ async def run_discovery(
             adapters,
             queries,
             max_results_per_query=max(max_results_per_query, 1),
-            browser_query_limit=max(browser_query_limit, 1),
         )
 
         normalized = normalize_jobs(raw_jobs)
