@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { SplitPane, PageHeader } from '@career-copilot/ui';
 import { useJobsStore } from '../state/useJobsStore';
 import { JobList } from './JobList';
@@ -11,9 +11,17 @@ import {
   runAssistedFill,
 } from '@career-copilot/api';
 
+interface AssistedReviewState {
+  draftId: string;
+  screenshotUrl?: string;
+  screenshotPath?: string;
+}
+
 export function JobFeedPage() {
   const { jobs, selectedJobId, isLoading, fetchJobs, selectJob, markInterested } = useJobsStore();
   const selectedJob = jobs.find((j) => j.id === selectedJobId);
+  const [assistedReview, setAssistedReview] = useState<AssistedReviewState | null>(null);
+  const [isSubmittingFinal, setIsSubmittingFinal] = useState(false);
 
   useEffect(() => {
     fetchJobs();
@@ -64,28 +72,31 @@ export function JobFeedPage() {
       return;
     }
 
-    const finalConfirmation = window.confirm(
-      [
-        'Draft fields were filled in AI-assisted mode.',
-        fillResult.data.screenshot_path
-          ? `Review artifact: ${fillResult.data.screenshot_path}`
-          : 'No screenshot path returned.',
-        '',
-        'Click OK only if you want to perform final submit now.',
-      ].join('\n')
-    );
-    if (!finalConfirmation) {
-      window.alert(`Draft ${prepared.data.id} is approved and ready for final submit later.`);
-      return;
-    }
+    setAssistedReview({
+      draftId: prepared.data.id,
+      screenshotUrl: fillResult.data.screenshot_url,
+      screenshotPath: fillResult.data.screenshot_path,
+    });
+  };
 
-    const submitted = await runAssistedConfirmSubmit(prepared.data.id);
+  const handleFinalSubmit = async () => {
+    if (!assistedReview || isSubmittingFinal) return;
+    setIsSubmittingFinal(true);
+    const submitted = await runAssistedConfirmSubmit(assistedReview.draftId);
+    setIsSubmittingFinal(false);
     if (submitted.error) {
       window.alert(submitted.error);
       return;
     }
-
+    setAssistedReview(null);
+    await fetchJobs();
     window.alert(`Application submitted with status: ${submitted.data.status}`);
+  };
+
+  const handleReviewLater = () => {
+    if (!assistedReview) return;
+    window.alert(`Draft ${assistedReview.draftId} is approved and ready for final submit later.`);
+    setAssistedReview(null);
   };
 
   const handlePrepareApplication = (jobId: string) => {
@@ -167,6 +178,66 @@ export function JobFeedPage() {
           }
         />
       </div>
+
+      {assistedReview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4">
+          <div className="w-full max-w-4xl rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
+            <div className="border-b border-zinc-800 px-5 py-4">
+              <h3 className="text-base font-semibold text-zinc-100">Review Browser Activity</h3>
+              <p className="mt-1 text-sm text-zinc-400">
+                AI-assisted fill completed. Review the captured browser state before final submit.
+              </p>
+            </div>
+
+            <div className="space-y-3 px-5 py-4">
+              {assistedReview.screenshotUrl ? (
+                <>
+                  <a
+                    href={assistedReview.screenshotUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center rounded-md bg-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-100 hover:bg-zinc-600"
+                  >
+                    Open Full Browser Capture
+                  </a>
+                  <div className="max-h-[55vh] overflow-auto rounded-lg border border-zinc-800 bg-zinc-950">
+                    <img
+                      src={assistedReview.screenshotUrl}
+                      alt="AI-assisted browser capture"
+                      className="block h-auto w-full"
+                    />
+                  </div>
+                </>
+              ) : (
+                <div className="rounded-md border border-amber-700/50 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+                  Screenshot was not returned by backend. You can still finalize manually.
+                  {assistedReview.screenshotPath && (
+                    <div className="mt-2 font-mono text-[11px] text-amber-300">
+                      {assistedReview.screenshotPath}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-zinc-800 px-5 py-4">
+              <button
+                onClick={handleReviewLater}
+                className="rounded-md bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-700"
+              >
+                Review Later
+              </button>
+              <button
+                onClick={() => void handleFinalSubmit()}
+                disabled={isSubmittingFinal}
+                className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
+              >
+                {isSubmittingFinal ? 'Submitting...' : 'Final Submit Now'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

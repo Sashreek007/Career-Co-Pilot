@@ -1,7 +1,9 @@
 import json
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -67,6 +69,15 @@ def _row_to_draft(row: sqlite3.Row) -> dict[str, Any]:
             except json.JSONDecodeError:
                 pass
     return item
+
+
+def _artifact_url_for_screenshot_path(path: str | None) -> str | None:
+    if not path:
+        return None
+    filename = Path(path).name.strip()
+    if not filename:
+        return None
+    return f"/api/artifacts/screenshots/{quote(filename)}"
 
 
 def _get_draft_or_404(draft_id: str, db: sqlite3.Connection) -> dict[str, Any]:
@@ -177,9 +188,11 @@ async def submit_draft(
     _assert_assisted_consent(payload.confirm_user_assisted, payload.acknowledge_platform_terms)
     try:
         result = await submit_application(draft_id, db)
+        screenshot_path = result.get("screenshot_path")
         return {
             "status": result.get("status", "ready_for_final_approval"),
-            "screenshot_path": result.get("screenshot_path"),
+            "screenshot_path": screenshot_path,
+            "screenshot_url": _artifact_url_for_screenshot_path(screenshot_path),
             "requires_explicit_final_submit": True,
         }
     except RateLimitError as err:
@@ -229,8 +242,10 @@ async def confirm_submit_draft(
     db.commit()
 
     draft = _get_draft_or_404(draft_id, db)
+    screenshot_path = result.get("screenshot_path")
     return {
         "status": result.get("status", "submitted"),
-        "screenshot_path": result.get("screenshot_path"),
+        "screenshot_path": screenshot_path,
+        "screenshot_url": _artifact_url_for_screenshot_path(screenshot_path),
         "draft": draft,
     }

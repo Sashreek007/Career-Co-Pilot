@@ -1,5 +1,8 @@
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from .db.schema import init_db
 from .routers import (
     applications,
@@ -17,6 +20,8 @@ from .routers import (
 from .scheduler import start_discovery_scheduler, stop_discovery_scheduler
 
 app = FastAPI(title="Career Co-Pilot API", version="0.1.0")
+SCREENSHOT_ARTIFACT_DIR = Path(__file__).resolve().parents[1] / "data" / "screenshots"
+SCREENSHOT_ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
 
 app.add_middleware(
     CORSMiddleware,
@@ -24,6 +29,12 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+)
+
+app.mount(
+    "/artifacts/screenshots",
+    StaticFiles(directory=str(SCREENSHOT_ARTIFACT_DIR)),
+    name="artifacts-screenshots",
 )
 
 @app.on_event("startup")

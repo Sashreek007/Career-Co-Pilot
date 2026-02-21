@@ -8,12 +8,14 @@ export interface AssistedDraft {
 export interface AssistedFillResult {
   status: string;
   screenshot_path?: string;
+  screenshot_url?: string;
   requires_explicit_final_submit: boolean;
 }
 
 export interface AssistedConfirmResult {
   status: string;
   screenshot_path?: string;
+  screenshot_url?: string;
   draft?: {
     id?: string;
     status?: string;
@@ -98,6 +100,8 @@ export async function runAssistedFill(draftId: string): Promise<ApiResponse<Assi
       status: String(payload.status ?? 'ready_for_final_approval'),
       screenshot_path:
         typeof payload.screenshot_path === 'string' ? payload.screenshot_path : undefined,
+      screenshot_url:
+        typeof payload.screenshot_url === 'string' ? payload.screenshot_url : undefined,
       requires_explicit_final_submit: Boolean(payload.requires_explicit_final_submit ?? true),
     },
     status: response.status,
@@ -133,6 +137,8 @@ export async function runAssistedConfirmSubmit(
       status: String(payload.status ?? 'submitted'),
       screenshot_path:
         typeof payload.screenshot_path === 'string' ? payload.screenshot_path : undefined,
+      screenshot_url:
+        typeof payload.screenshot_url === 'string' ? payload.screenshot_url : undefined,
       draft: draftPayload
         ? {
             id: typeof draftPayload.id === 'string' ? draftPayload.id : undefined,
