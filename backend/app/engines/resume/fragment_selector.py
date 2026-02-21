@@ -13,12 +13,45 @@ logger = logging.getLogger(__name__)
 
 # ── Scoring helpers ───────────────────────────────────────────────────────
 
-def _skill_overlap(item_skills: list[str], target_skills: list[str]) -> float:
+def _normalise_skill_names(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    names: list[str] = []
+    for value in values:
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned:
+                names.append(cleaned)
+            continue
+        if isinstance(value, dict):
+            name = value.get("name")
+            if isinstance(name, str) and name.strip():
+                names.append(name.strip())
+    return names
+
+
+def _normalise_bullet(bullet: Any, default_skills: list[str]) -> dict[str, Any]:
+    if isinstance(bullet, str):
+        return {"text": bullet.strip(), "skills": default_skills}
+    if isinstance(bullet, dict):
+        text = bullet.get("text")
+        if not isinstance(text, str):
+            text = bullet.get("description") or bullet.get("bullet") or ""
+        return {
+            "text": str(text).strip(),
+            "skills": _normalise_skill_names(bullet.get("skills", default_skills)),
+        }
+    return {"text": "", "skills": default_skills}
+
+
+def _skill_overlap(item_skills: list[Any], target_skills: list[Any]) -> float:
     """Fraction of *target_skills* covered by *item_skills* (0.0–1.0)."""
-    if not target_skills:
+    item = _normalise_skill_names(item_skills)
+    target = _normalise_skill_names(target_skills)
+    if not target:
         return 0.0
-    item_set = {s.lower() for s in item_skills}
-    target_set = {s.lower() for s in target_skills}
+    item_set = {s.lower() for s in item}
+    target_set = {s.lower() for s in target}
     overlap = item_set & target_set
     return len(overlap) / len(target_set)
 
@@ -79,7 +112,7 @@ def _score_bullet(
     end_date: str | None,
 ) -> float:
     """Composite score: skill_overlap×0.6 + impact×0.3 + recency×0.1."""
-    bullet_skills = bullet.get("skills", [])
+    bullet_skills = _normalise_skill_names(bullet.get("skills", []))
     return (
         _skill_overlap(bullet_skills, required_skills) * 0.6
         + _impact_score(bullet) * 0.3
@@ -93,8 +126,11 @@ def _build_reason(
     score: float,
 ) -> str:
     """Generate a short human-readable reason for selecting this fragment."""
-    matched = {s for s in bullet.get("skills", [])
-                if s.lower() in {r.lower() for r in required_skills}}
+    required_lower = {r.lower() for r in _normalise_skill_names(required_skills)}
+    matched = {
+        s for s in _normalise_skill_names(bullet.get("skills", []))
+        if s.lower() in required_lower
+    }
     parts: list[str] = []
     if matched:
         parts.append(f"matches skills: {', '.join(sorted(matched))}")
@@ -125,21 +161,39 @@ def select_fragments(
     dict with keys ``experience`` and ``projects``, each a list of selected
     fragment dicts augmented with ``selection_reason`` and ``score``.
     """
-    required_skills: list[str] = jd_analysis.get("required_skills", [])
+    required_skills: list[str] = _normalise_skill_names(jd_analysis.get("required_skills", []))
 
     # ── Score & select experience bullets ──────────────────────────────
     scored_experience: list[dict[str, Any]] = []
     for entry in user_profile.get("experience_json", []):
-        end_date = entry.get("end_date")
+        if not isinstance(entry, dict):
+            continue
+
+        end_date = entry.get("end_date") or entry.get("endDate")
+        entry_skills = _normalise_skill_names(entry.get("skills", []))
         bullets = entry.get("bullets", [])
+        if isinstance(bullets, str):
+            bullets = [bullets]
+        if not isinstance(bullets, list):
+            bullets = []
+        if not bullets:
+            description = entry.get("description")
+            if isinstance(description, str) and description.strip():
+                bullets = [description.strip()]
+
         for bullet in bullets:
-            score = _score_bullet(bullet, required_skills, end_date)
+            normalised = _normalise_bullet(bullet, entry_skills)
+            if not normalised["text"]:
+                continue
+
+            score = _score_bullet(normalised, required_skills, end_date)
             scored_experience.append({
-                **bullet,
+                **(bullet if isinstance(bullet, dict) else {}),
+                **normalised,
                 "company": entry.get("company", ""),
                 "role": entry.get("role", ""),
                 "score": round(score, 4),
-                "selection_reason": _build_reason(bullet, required_skills, score),
+                "selection_reason": _build_reason(normalised, required_skills, score),
             })
 
     scored_experience.sort(key=lambda b: b["score"], reverse=True)
@@ -148,12 +202,23 @@ def select_fragments(
     # ── Score & select projects ────────────────────────────────────────
     scored_projects: list[dict[str, Any]] = []
     for project in user_profile.get("projects_json", []):
-        proj_skills = project.get("skills", [])
+        if not isinstance(project, dict):
+            continue
+        proj_skills = _normalise_skill_names(project.get("skills", []))
+        if not proj_skills:
+            proj_skills = _normalise_skill_names(
+                project.get("techStack", project.get("tech_stack", []))
+            )
         score = _skill_overlap(proj_skills, required_skills)
         scored_projects.append({
             **project,
+            "skills": proj_skills,
             "score": round(score, 4),
-            "selection_reason": _build_reason(project, required_skills, score),
+            "selection_reason": _build_reason(
+                {**project, "skills": proj_skills},
+                required_skills,
+                score,
+            ),
         })
 
     scored_projects.sort(key=lambda p: p["score"], reverse=True)

@@ -26,6 +26,20 @@ from .bullet_rewriter import rewrite_bullet
 logger = logging.getLogger(__name__)
 
 
+def _normalise_skill_names(values: list[Any]) -> list[str]:
+    names: list[str] = []
+    for value in values:
+        if isinstance(value, str):
+            if value.strip():
+                names.append(value.strip())
+            continue
+        if isinstance(value, dict):
+            name = value.get("name")
+            if isinstance(name, str) and name.strip():
+                names.append(name.strip())
+    return names
+
+
 def _load_job(job_id: str, db: sqlite3.Connection) -> dict[str, Any] | None:
     row = db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
     if row is None:
@@ -56,12 +70,12 @@ def _load_profile(db: sqlite3.Connection) -> dict[str, Any] | None:
     return profile
 
 
-def _compute_strength(jd_analysis: dict, resume_skills: list[str]) -> float:
+def _compute_strength(jd_analysis: dict, resume_skills: list[Any]) -> float:
     """strength_score = |required ∩ resume| / |required|."""
     required = {s.lower() for s in jd_analysis.get("required_skills", [])}
     if not required:
         return 0.0
-    present = {s.lower() for s in resume_skills}
+    present = {s.lower() for s in _normalise_skill_names(resume_skills)}
     return round(len(required & present) / len(required), 4)
 
 
@@ -86,6 +100,10 @@ async def compile_resume(
 
     # 3. Analyse job description
     jd_analysis = await analyze_job_description(job.get("description", ""))
+    if not _normalise_skill_names(jd_analysis.get("required_skills", [])):
+        jd_analysis["required_skills"] = _normalise_skill_names(
+            job.get("skills_required_json", [])
+        )
 
     # 4. Select fragments
     fragments = select_fragments(jd_analysis, profile)
@@ -102,11 +120,11 @@ async def compile_resume(
     # 6. Compute strength score
     all_resume_skills: list[str] = []
     for frag in fragments.get("experience", []):
-        all_resume_skills.extend(frag.get("skills", []))
+        all_resume_skills.extend(_normalise_skill_names(frag.get("skills", [])))
     for frag in fragments.get("projects", []):
-        all_resume_skills.extend(frag.get("skills", []))
+        all_resume_skills.extend(_normalise_skill_names(frag.get("skills", [])))
     # Add user's declared skills
-    all_resume_skills.extend(profile.get("skills_json", []))
+    all_resume_skills.extend(_normalise_skill_names(profile.get("skills_json", [])))
     strength_score = _compute_strength(jd_analysis, all_resume_skills)
 
     # 7. Generate resume_version_id

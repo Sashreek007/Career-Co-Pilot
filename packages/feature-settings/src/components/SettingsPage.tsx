@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { PageHeader } from '@career-copilot/ui';
 import { useSettingsStore } from '../state/useSettingsStore';
 import { Eye, EyeOff, AlertTriangle } from 'lucide-react';
@@ -28,6 +28,10 @@ export function SettingsPage() {
   const s = useSettingsStore();
   const [showKey, setShowKey] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+
+  useEffect(() => {
+    void s.hydrateFromBackend();
+  }, [s.hydrateFromBackend]);
 
   return (
     <div className="h-full overflow-y-auto">
@@ -80,7 +84,7 @@ export function SettingsPage() {
         <Section title="AI / LLM">
           <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 mb-2">
             <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-            <p className="text-xs text-amber-300">Your API key is stored only in your browser's localStorage. It is never sent to our servers.</p>
+            <p className="text-xs text-amber-300">Your API key syncs to your local backend settings so Gemini-powered backend features can use it.</p>
           </div>
           <Field label="LLM Provider">
             <select value={s.llmProvider} onChange={(e) => s.setLlmProvider(e.target.value as any)} className={selectCls}>

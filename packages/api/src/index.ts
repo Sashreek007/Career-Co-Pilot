@@ -7,6 +7,8 @@ export { getApplicationDrafts, getApplicationDraft, updateDraftStatus } from './
 export { getInterviewKit, getInterviewKits } from './interviews';
 export { getProfile, updateProfile } from './profile';
 export { getInsights } from './insights';
+export { getSettings, updateSettings } from './settings';
+export type { AppSettings } from './settings';
 
 // Mock data exports (for seeding stores directly if needed)
 export { MOCK_JOBS } from './mock-data/jobs';
