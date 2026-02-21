@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Any
 
 from ...clients.gemini import get_gemini_client
@@ -24,6 +25,18 @@ def _parse_skills(raw_skills: Any) -> list[dict[str, Any]]:
     if isinstance(raw_skills, list):
         return raw_skills
     return []
+
+
+def _parse_json_obj(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
 
 
 def _extract_skill_years(skill: dict[str, Any]) -> int | None:
@@ -113,6 +126,7 @@ def _profile_context_snippet(user_profile: dict[str, Any]) -> dict[str, Any]:
         "summary": _clean_text(user_profile.get("summary")),
         "skills": skill_names[:10],
         "experience": role_snippets,
+        "resume_summary": _clean_text(_parse_json_obj(user_profile.get("resume_parsed_json")).get("summary")),
     }
 
 
@@ -188,8 +202,21 @@ def generate_draft_answers(
     """Populate fields conservatively. Unknown values are explicit review placeholders."""
     answers: dict[str, Any] = {}
     skills = _parse_skills(user_profile.get("skills_json"))
+    resume_parsed = _parse_json_obj(user_profile.get("resume_parsed_json"))
+    resume_skill_years = _parse_json_obj(resume_parsed.get("skill_years"))
+    resume_file_path = _clean_text(user_profile.get("resume_file_path"))
+    resume_file_name = _clean_text(user_profile.get("resume_file_name"))
+
+    fallback_name = _clean_text(resume_parsed.get("name"))
+    fallback_email = _clean_text(resume_parsed.get("email"))
+    fallback_phone = _clean_text(resume_parsed.get("phone"))
+    fallback_location = _clean_text(resume_parsed.get("location"))
+    fallback_linkedin = _clean_text(resume_parsed.get("linkedin_url"))
+    fallback_github = _clean_text(resume_parsed.get("github_url"))
+
     ai_client = get_gemini_client()
-    first_name, last_name = _split_name(user_profile.get("name"))
+    effective_name = _clean_text(user_profile.get("name")) or fallback_name
+    first_name, last_name = _split_name(effective_name)
 
     for field in form_fields:
         label = str(field.get("label") or "").strip() or "Unknown Field"
@@ -197,11 +224,17 @@ def generate_draft_answers(
         field_type = _as_lower(field.get("type"))
 
         if field_type == "file":
-            answers[label] = {"resume_upload_required": True}
+            if resume_file_path and Path(resume_file_path).exists():
+                answers[label] = {
+                    "resume_file_path": resume_file_path,
+                    "resume_file_name": resume_file_name or Path(resume_file_path).name,
+                }
+            else:
+                answers[label] = {"resume_upload_required": True}
             continue
 
         if "full name" in label_lower or label_lower == "name":
-            answers[label] = user_profile.get("name") or "[REQUIRES_REVIEW: Name]"
+            answers[label] = effective_name or "[REQUIRES_REVIEW: Name]"
             continue
         if "first name" in label_lower:
             answers[label] = first_name or "[REQUIRES_REVIEW: First Name]"
@@ -210,22 +243,22 @@ def generate_draft_answers(
             answers[label] = last_name or "[REQUIRES_REVIEW: Last Name]"
             continue
         if "email" in label_lower:
-            answers[label] = user_profile.get("email") or "[REQUIRES_REVIEW: Email]"
+            answers[label] = _clean_text(user_profile.get("email")) or fallback_email or "[REQUIRES_REVIEW: Email]"
             continue
         if "phone" in label_lower:
-            answers[label] = user_profile.get("phone") or "[REQUIRES_REVIEW: Phone]"
+            answers[label] = _clean_text(user_profile.get("phone")) or fallback_phone or "[REQUIRES_REVIEW: Phone]"
             continue
         if "linkedin" in label_lower:
-            answers[label] = user_profile.get("linkedin_url") or "[REQUIRES_REVIEW: LinkedIn]"
+            answers[label] = _clean_text(user_profile.get("linkedin_url")) or fallback_linkedin or "[REQUIRES_REVIEW: LinkedIn]"
             continue
         if "github" in label_lower:
-            answers[label] = user_profile.get("github_url") or "[REQUIRES_REVIEW: GitHub]"
+            answers[label] = _clean_text(user_profile.get("github_url")) or fallback_github or "[REQUIRES_REVIEW: GitHub]"
             continue
         if "country" in label_lower:
-            answers[label] = _infer_country(user_profile.get("location"))
+            answers[label] = _infer_country(_clean_text(user_profile.get("location")) or fallback_location)
             continue
         if "location" in label_lower or "city" in label_lower:
-            answers[label] = user_profile.get("location") or "[REQUIRES_REVIEW: Location]"
+            answers[label] = _clean_text(user_profile.get("location")) or fallback_location or "[REQUIRES_REVIEW: Location]"
             continue
 
         if _is_experience_years_prompt(label_lower):
@@ -237,6 +270,14 @@ def generate_draft_answers(
                 if name and name in label_lower:
                     skill_years = _extract_skill_years(skill)
                     break
+            if skill_years is None:
+                for skill_name, raw_years in resume_skill_years.items():
+                    if _as_lower(skill_name) and _as_lower(skill_name) in label_lower:
+                        try:
+                            skill_years = int(float(raw_years))
+                        except (TypeError, ValueError):
+                            skill_years = None
+                        break
             answers[label] = str(skill_years) if skill_years is not None else f"[REQUIRES_REVIEW: {label}]"
             continue
 

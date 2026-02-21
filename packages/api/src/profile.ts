@@ -1,17 +1,334 @@
-import type { UserProfile } from '@career-copilot/core';
-import { delay, MOCK_DELAY_MS } from './types';
-import { MOCK_PROFILE } from './mock-data/profile';
+import type {
+  Certification,
+  Experience,
+  Project,
+  RoleInterest,
+  Skill,
+  UserProfile,
+} from '@career-copilot/core';
 import type { ApiResponse } from './types';
+import { MOCK_PROFILE } from './mock-data/profile';
 
-let profile = { ...MOCK_PROFILE };
+type BackendProfile = {
+  id?: string;
+  name?: string;
+  email?: string;
+  phone?: string | null;
+  location?: string;
+  linkedin_url?: string | null;
+  github_url?: string | null;
+  portfolio_url?: string | null;
+  summary?: string | null;
+  skills_json?: unknown;
+  experience_json?: unknown;
+  projects_json?: unknown;
+  certifications_json?: unknown;
+  role_interests_json?: unknown;
+  updated_at?: string;
+  resume_file_name?: string | null;
+  resume_uploaded_at?: string | null;
+};
+
+export interface ResumeUploadExtraction {
+  file_name: string;
+  skills_extracted: number;
+  experiences_extracted: number;
+  projects_extracted: number;
+  certifications_extracted: number;
+  used_ai: boolean;
+}
+
+export interface ResumeUploadResult {
+  profile: UserProfile;
+  extracted: ResumeUploadExtraction;
+}
+
+function toErrorMessage(payload: unknown, fallback: string): string {
+  if (payload && typeof payload === 'object' && 'detail' in payload) {
+    const detail = (payload as { detail?: unknown }).detail;
+    if (typeof detail === 'string' && detail.trim()) return detail;
+  }
+  return fallback;
+}
+
+function asArray(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  return [];
+}
+
+function parseSeniority(value: unknown): RoleInterest['seniority'] {
+  const normalized = String(value ?? '').toLowerCase();
+  if (normalized === 'intern' || normalized === 'entry' || normalized === 'mid' || normalized === 'senior') {
+    return normalized;
+  }
+  return 'entry';
+}
+
+function normalizeSkill(value: unknown, index: number): Skill {
+  if (value && typeof value === 'object') {
+    const item = value as Record<string, unknown>;
+    return {
+      id: String(item.id ?? `sk-${index}`),
+      name: String(item.name ?? '').trim(),
+      level: (String(item.level ?? 'intermediate') as Skill['level']) || 'intermediate',
+      confidenceScore: Number(item.confidenceScore ?? item.confidence_score ?? 65) || 65,
+      yearsOfExperience: Number(item.yearsOfExperience ?? item.years_of_experience ?? item.years ?? 1) || 0,
+      tags: asArray(item.tags).map((tag) => String(tag)).filter(Boolean),
+    };
+  }
+  const name = String(value ?? '').trim();
+  return {
+    id: `sk-${index}`,
+    name,
+    level: 'intermediate',
+    confidenceScore: 65,
+    yearsOfExperience: 1,
+    tags: [],
+  };
+}
+
+function normalizeExperience(value: unknown, index: number): Experience {
+  if (value && typeof value === 'object') {
+    const item = value as Record<string, unknown>;
+    const endRaw = String(item.endDate ?? item.end_date ?? item.end ?? '');
+    const current =
+      Boolean(item.current) ||
+      endRaw.toLowerCase() === 'present' ||
+      endRaw.toLowerCase() === 'current';
+    return {
+      id: String(item.id ?? `exp-${index}`),
+      company: String(item.company ?? item.employer ?? ''),
+      role: String(item.role ?? item.title ?? item.position ?? ''),
+      description: String(item.description ?? item.summary ?? ''),
+      skills: asArray(item.skills).map((skill) => String(skill)).filter(Boolean),
+      startDate: String(item.startDate ?? item.start_date ?? item.start ?? ''),
+      endDate: current ? undefined : endRaw || undefined,
+      current,
+      bullets: asArray(item.bullets).map((bullet) => String(bullet)).filter(Boolean),
+    };
+  }
+  return {
+    id: `exp-${index}`,
+    company: '',
+    role: '',
+    description: '',
+    skills: [],
+    startDate: '',
+    endDate: undefined,
+    current: false,
+    bullets: [],
+  };
+}
+
+function normalizeProject(value: unknown, index: number): Project {
+  if (value && typeof value === 'object') {
+    const item = value as Record<string, unknown>;
+    return {
+      id: String(item.id ?? `proj-${index}`),
+      name: String(item.name ?? ''),
+      description: String(item.description ?? ''),
+      techStack: asArray(item.techStack ?? item.tech_stack).map((token) => String(token)).filter(Boolean),
+      skills: asArray(item.skills).map((token) => String(token)).filter(Boolean),
+      impactStatement: String(item.impactStatement ?? item.impact_statement ?? ''),
+      url: String(item.url ?? '').trim() || undefined,
+      startDate: String(item.startDate ?? item.start_date ?? ''),
+      endDate: String(item.endDate ?? item.end_date ?? '').trim() || undefined,
+    };
+  }
+  return {
+    id: `proj-${index}`,
+    name: '',
+    description: '',
+    techStack: [],
+    skills: [],
+    impactStatement: '',
+    startDate: '',
+    endDate: undefined,
+  };
+}
+
+function normalizeCertification(value: unknown, index: number): Certification {
+  if (value && typeof value === 'object') {
+    const item = value as Record<string, unknown>;
+    return {
+      id: String(item.id ?? `cert-${index}`),
+      name: String(item.name ?? ''),
+      issuer: String(item.issuer ?? ''),
+      dateObtained: String(item.dateObtained ?? item.date_obtained ?? ''),
+      url: String(item.url ?? '').trim() || undefined,
+    };
+  }
+  return {
+    id: `cert-${index}`,
+    name: '',
+    issuer: '',
+    dateObtained: '',
+    url: undefined,
+  };
+}
+
+function normalizeRoleInterest(value: unknown, index: number): RoleInterest {
+  if (value && typeof value === 'object') {
+    const item = value as Record<string, unknown>;
+    return {
+      id: String(item.id ?? `ri-${index}`),
+      title: String(item.title ?? item.role ?? ''),
+      seniority: parseSeniority(item.seniority),
+      domains: asArray(item.domains).map((domain) => String(domain)).filter(Boolean),
+      remote: Boolean(item.remote ?? true),
+      locations: asArray(item.locations).map((location) => String(location)).filter(Boolean),
+    };
+  }
+  return {
+    id: `ri-${index}`,
+    title: '',
+    seniority: 'entry',
+    domains: [],
+    remote: true,
+    locations: [],
+  };
+}
+
+function fromBackend(payload: BackendProfile): UserProfile {
+  return {
+    id: String(payload.id ?? 'local'),
+    name: String(payload.name ?? ''),
+    email: String(payload.email ?? ''),
+    phone: payload.phone ? String(payload.phone) : undefined,
+    location: String(payload.location ?? ''),
+    linkedIn: payload.linkedin_url ? String(payload.linkedin_url) : undefined,
+    github: payload.github_url ? String(payload.github_url) : undefined,
+    portfolio: payload.portfolio_url ? String(payload.portfolio_url) : undefined,
+    skills: asArray(payload.skills_json)
+      .map(normalizeSkill)
+      .filter((skill) => Boolean(skill.name)),
+    experiences: asArray(payload.experience_json)
+      .map(normalizeExperience)
+      .filter((item) => Boolean(item.role || item.company)),
+    projects: asArray(payload.projects_json)
+      .map(normalizeProject)
+      .filter((item) => Boolean(item.name)),
+    certifications: asArray(payload.certifications_json)
+      .map(normalizeCertification)
+      .filter((item) => Boolean(item.name)),
+    roleInterests: asArray(payload.role_interests_json)
+      .map(normalizeRoleInterest)
+      .filter((item) => Boolean(item.title)),
+    updatedAt: String(payload.updated_at ?? new Date().toISOString()),
+    resumeFileName: payload.resume_file_name ? String(payload.resume_file_name) : undefined,
+    resumeUploadedAt: payload.resume_uploaded_at ? String(payload.resume_uploaded_at) : undefined,
+  };
+}
+
+function toBackend(payload: Partial<UserProfile>): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (payload.id !== undefined) body.id = payload.id;
+  if (payload.name !== undefined) body.name = payload.name;
+  if (payload.email !== undefined) body.email = payload.email;
+  if (payload.phone !== undefined) body.phone = payload.phone;
+  if (payload.location !== undefined) body.location = payload.location;
+  if (payload.linkedIn !== undefined) body.linkedin_url = payload.linkedIn;
+  if (payload.github !== undefined) body.github_url = payload.github;
+  if (payload.portfolio !== undefined) body.portfolio_url = payload.portfolio;
+  if (payload.skills !== undefined) body.skills_json = payload.skills;
+  if (payload.experiences !== undefined) body.experience_json = payload.experiences;
+  if (payload.projects !== undefined) body.projects_json = payload.projects;
+  if (payload.certifications !== undefined) body.certifications_json = payload.certifications;
+  if (payload.roleInterests !== undefined) body.role_interests_json = payload.roleInterests;
+  return body;
+}
+
+async function seedDefaultProfile(): Promise<UserProfile> {
+  const seed = { ...MOCK_PROFILE, id: 'local' };
+  const response = await fetch('/api/profile', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(toBackend(seed)),
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to create default profile (${response.status})`);
+  }
+  const payload = (await response.json()) as BackendProfile;
+  return fromBackend(payload);
+}
 
 export async function getProfile(): Promise<ApiResponse<UserProfile>> {
-  await delay(MOCK_DELAY_MS);
-  return { data: profile, status: 200 };
+  const response = await fetch('/api/profile');
+  if (response.status === 404) {
+    const profile = await seedDefaultProfile();
+    return { data: profile, status: 200 };
+  }
+  if (!response.ok) {
+    throw new Error(`Failed to fetch profile (${response.status})`);
+  }
+  const payload = (await response.json()) as BackendProfile;
+  return { data: fromBackend(payload), status: response.status };
 }
 
 export async function updateProfile(partial: Partial<UserProfile>): Promise<ApiResponse<UserProfile>> {
-  await delay(MOCK_DELAY_MS);
-  profile = { ...profile, ...partial, updatedAt: new Date().toISOString() };
-  return { data: profile, status: 200 };
+  const response = await fetch('/api/profile', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(toBackend(partial)),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(toErrorMessage(payload, `Failed to update profile (${response.status})`));
+  }
+  return { data: fromBackend(payload as BackendProfile), status: response.status };
+}
+
+export async function uploadProfileResume(file: File): Promise<ApiResponse<ResumeUploadResult>> {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const response = await fetch('/api/profile/resume', {
+    method: 'POST',
+    body: formData,
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    return {
+      data: {
+        profile: MOCK_PROFILE,
+        extracted: {
+          file_name: file.name,
+          skills_extracted: 0,
+          experiences_extracted: 0,
+          projects_extracted: 0,
+          certifications_extracted: 0,
+          used_ai: false,
+        },
+      },
+      error: toErrorMessage(payload, 'Failed to upload resume'),
+      status: response.status,
+    };
+  }
+
+  const profilePayload =
+    payload && typeof payload === 'object' && 'profile' in payload
+      ? (payload as { profile: BackendProfile }).profile
+      : (payload as BackendProfile);
+
+  const extractedRaw =
+    payload && typeof payload === 'object' && 'extracted' in payload
+      ? (payload as { extracted: Record<string, unknown> }).extracted
+      : {};
+
+  const extracted: ResumeUploadExtraction = {
+    file_name: String(extractedRaw.file_name ?? file.name),
+    skills_extracted: Number(extractedRaw.skills_extracted ?? 0),
+    experiences_extracted: Number(extractedRaw.experiences_extracted ?? 0),
+    projects_extracted: Number(extractedRaw.projects_extracted ?? 0),
+    certifications_extracted: Number(extractedRaw.certifications_extracted ?? 0),
+    used_ai: Boolean(extractedRaw.used_ai ?? false),
+  };
+
+  return {
+    data: {
+      profile: fromBackend(profilePayload),
+      extracted,
+    },
+    status: response.status,
+  };
 }

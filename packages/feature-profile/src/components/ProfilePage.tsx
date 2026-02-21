@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ChangeEvent } from 'react';
 import type {
   Certification,
   Experience,
@@ -79,9 +79,11 @@ function clampScore(value: number): number {
 }
 
 export function ProfilePage() {
-  const { profile, isLoading, isSaving, fetchProfile, saveProfile } = useProfileStore();
+  const { profile, isLoading, isSaving, isUploadingResume, fetchProfile, saveProfile, uploadResume } =
+    useProfileStore();
   const [isEditing, setIsEditing] = useState(false);
   const [form, setForm] = useState<ProfileEditForm | null>(null);
+  const [resumeStatus, setResumeStatus] = useState<string>('');
 
   useEffect(() => {
     fetchProfile();
@@ -187,6 +189,36 @@ export function ProfilePage() {
   };
 
   const canSave = Boolean(form?.name.trim() && form.email.trim() && form.location.trim());
+  const resumeUploadedLabel = profile.resumeUploadedAt
+    ? new Date(profile.resumeUploadedAt).toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      })
+    : null;
+
+  const handleResumeUpload = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setResumeStatus('');
+    try {
+      const result = await uploadResume(file);
+      const extracted = result.extracted;
+      setResumeStatus(
+        `Resume parsed (${extracted.file_name}): ${extracted.skills_extracted} skills extracted${
+          extracted.used_ai ? ' with AI assistance' : ''
+        }.`
+      );
+      if (isEditing && result.profile) {
+        setForm(toForm(result.profile));
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to upload resume.';
+      setResumeStatus(message);
+    } finally {
+      event.target.value = '';
+    }
+  };
 
   const lastUpdated = new Date(profile.updatedAt).toLocaleDateString('en-US', {
     month: 'short',
@@ -230,6 +262,27 @@ export function ProfilePage() {
             )}
           </div>
           <p className="mt-2 text-xs text-zinc-500">Last updated: {lastUpdated}</p>
+          {!isEditing && (
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <label className="cursor-pointer rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-700 transition-colors">
+                {isUploadingResume ? 'Uploading Resume...' : 'Upload Resume (PDF/DOCX/TXT)'}
+                <input
+                  type="file"
+                  accept=".pdf,.docx,.txt,.md,.rtf"
+                  onChange={(event) => void handleResumeUpload(event)}
+                  disabled={isUploadingResume}
+                  className="hidden"
+                />
+              </label>
+              {profile.resumeFileName && (
+                <p className="text-xs text-zinc-500">
+                  Resume on file: {profile.resumeFileName}
+                  {resumeUploadedLabel ? ` (uploaded ${resumeUploadedLabel})` : ''}
+                </p>
+              )}
+              {resumeStatus && <p className="text-xs text-zinc-400">{resumeStatus}</p>}
+            </div>
+          )}
 
           {isEditing && form ? (
             <div className="mt-4 rounded-lg border border-zinc-800 bg-zinc-900 p-4">

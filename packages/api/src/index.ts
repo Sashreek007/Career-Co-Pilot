@@ -21,7 +21,8 @@ export type {
 export { runBrowserAssistedDiscovery } from './discovery';
 export type { BrowserAssistedDiscoveryInput, BrowserAssistedDiscoveryResult, BrowserDiscoverySource } from './discovery';
 export { getInterviewKit, getInterviewKits } from './interviews';
-export { getProfile, updateProfile } from './profile';
+export { getProfile, updateProfile, uploadProfileResume } from './profile';
+export type { ResumeUploadResult, ResumeUploadExtraction } from './profile';
 export { getInsights } from './insights';
 export { getSettings, updateSettings } from './settings';
 export type { AppSettings } from './settings';
