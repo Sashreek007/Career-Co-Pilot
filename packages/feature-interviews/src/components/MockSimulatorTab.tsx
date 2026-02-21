@@ -23,8 +23,18 @@ export function MockSimulatorTab({ kit }: { kit: InterviewKit }) {
 
   if (!question) return null;
 
+  const progressPercent = ((currentQuestionIndex + 1) / kit.questions.length) * 100;
+
   return (
     <div className="px-6 py-5 max-w-2xl">
+      {/* Progress bar */}
+      <div className="w-full h-1 bg-zinc-800 rounded-full mb-4 overflow-hidden">
+        <div
+          className="h-1 bg-blue-500 rounded-full transition-all duration-300"
+          style={{ width: `${progressPercent}%` }}
+        />
+      </div>
+
       <div className="mb-2 flex items-center gap-2 text-xs text-zinc-500">
         <span>Question {currentQuestionIndex + 1} of {kit.questions.length}</span>
         <span className="text-zinc-700">·</span>
