@@ -444,7 +444,7 @@ export function JobFeedPage() {
         source,
         query,
         useVisibleBrowser,
-        waitSeconds: 28,
+        waitSeconds: 8,
         maxResults: 35,
         minMatchScore: 0.0,
       });

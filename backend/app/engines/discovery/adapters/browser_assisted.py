@@ -179,6 +179,59 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
     def _format_description(self, text: str) -> str:
         return _clean_description_text(text)
 
+    async def _resolve_control_page(self, context) -> tuple[Any, bool]:
+        """
+        Prefer the currently visible tab in user's Chrome so they can watch AI actions.
+        Returns (page, close_page_when_done).
+        """
+        pages = list(getattr(context, "pages", []) or [])
+        for candidate in reversed(pages):
+            try:
+                state = await candidate.evaluate("() => document.visibilityState")
+                if state == "visible":
+                    return candidate, False
+            except Exception:
+                continue
+        if pages:
+            return pages[-1], False
+        page = await context.new_page()
+        return page, True
+
+    async def _scroll_visible_results(self, page) -> bool:
+        """
+        Scroll site-specific results panes first; fallback to page scroll.
+        Returns True if an in-page scroll container was moved.
+        """
+        return bool(
+            await page.evaluate(
+                """
+                () => {
+                  const selectors = [
+                    '.jobs-search-results-list',
+                    '.scaffold-layout__list-container',
+                    '.scaffold-layout__list',
+                    '[data-testid="jobsearch-ResultsList"]',
+                    '#mosaic-provider-jobcards',
+                    '.jobsearch-LeftPane',
+                  ];
+                  for (const selector of selectors) {
+                    const node = document.querySelector(selector);
+                    if (!node) continue;
+                    const el = node;
+                    const scrollable = el.scrollHeight > el.clientHeight + 40;
+                    if (!scrollable) continue;
+                    const before = el.scrollTop;
+                    const delta = Math.max(700, Math.floor(el.clientHeight * 0.9));
+                    el.scrollTop = before + delta;
+                    if (el.scrollTop !== before) return true;
+                  }
+                  window.scrollBy(0, 900);
+                  return false;
+                }
+                """
+            )
+        )
+
     async def search(self, query: str, max_results: int = 20) -> list[RawJobData]:
         self.last_error = None
         if not query.strip():
@@ -195,6 +248,7 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
         page = None
         close_browser = True
         close_context = True
+        close_page = True
 
         async def _restore_visible_state() -> None:
             if context is None:
@@ -265,7 +319,13 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
 
             if context is None:
                 raise RuntimeError("Could not create browser context for discovery.")
-            page = await context.new_page()
+            if self.use_visible_browser:
+                page, close_page = await self._resolve_control_page(context)
+            else:
+                page = await context.new_page()
+                close_page = True
+
+            await page.bring_to_front()
 
             logger.info(
                 "User-assisted discovery opening %s. Complete login/search review in browser (%ds).",
@@ -281,8 +341,11 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
             stale_scrolls = 0
             rows: list[dict[str, str]] = []
             for _ in range(15):  # hard ceiling of 15 scrolls
-                await page.mouse.wheel(0, 1800)
-                await page.wait_for_timeout(600)
+                await page.bring_to_front()
+                moved_container = await self._scroll_visible_results(page)
+                if not moved_container:
+                    await page.mouse.wheel(0, 1600)
+                await page.wait_for_timeout(750 if self.use_visible_browser else 600)
                 rows = await self._extract_rows(page)
                 if len(rows) >= max_results:
                     break
@@ -331,7 +394,7 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
                     await _persist_visible_state()
                 except Exception:
                     logger.debug("Could not persist browser discovery state", exc_info=True)
-            if page is not None:
+            if page is not None and close_page:
                 await page.close()
             if context is not None and close_context:
                 await context.close()
