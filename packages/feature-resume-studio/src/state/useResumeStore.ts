@@ -39,7 +39,19 @@ export const useResumeStore = create<ResumeStore>((set, get) => ({
     }
   },
   exportPdf: async (id) => {
-    await exportResumeAsPdf(id);
-    console.log('[stub] PDF export requested — backend not connected yet');
+    const res = await exportResumeAsPdf(id);
+    if (!res.data) {
+      console.warn('[resume] PDF export failed', res.error ?? 'Unknown error');
+      return;
+    }
+    const url = URL.createObjectURL(res.data.blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = res.data.filename;
+    a.click();
+    URL.revokeObjectURL(url);
+    if (res.data.savedPath) {
+      console.info('[resume] PDF saved to', res.data.savedPath);
+    }
   },
 }));

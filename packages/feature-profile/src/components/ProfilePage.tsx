@@ -68,10 +68,17 @@ function toForm(profile: UserProfile): ProfileEditForm {
 }
 
 function toHref(value: string): string {
-  if (value.startsWith('http://') || value.startsWith('https://')) {
-    return value;
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const withScheme =
+    trimmed.startsWith('http://') || trimmed.startsWith('https://') ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(withScheme);
+    if (!parsed.hostname || !parsed.hostname.includes('.')) return '';
+    return parsed.toString();
+  } catch {
+    return '';
   }
-  return `https://${value}`;
 }
 
 function clampScore(value: number): number {
@@ -79,21 +86,44 @@ function clampScore(value: number): number {
 }
 
 export function ProfilePage() {
-  const { profile, isLoading, isSaving, isUploadingResume, fetchProfile, saveProfile, uploadResume } =
-    useProfileStore();
+  const {
+    profile,
+    profiles,
+    selectedProfileId,
+    isLoading,
+    isSaving,
+    isUploadingResume,
+    isRecommendingRoles,
+    fetchProfiles,
+    fetchProfile,
+    selectProfile,
+    createBlankProfile,
+    renameSelectedProfile,
+    saveProfile,
+    uploadResume,
+    recommendRoles,
+  } = useProfileStore();
   const [isEditing, setIsEditing] = useState(false);
   const [form, setForm] = useState<ProfileEditForm | null>(null);
   const [resumeStatus, setResumeStatus] = useState<string>('');
+  const [roleRecommendationStatus, setRoleRecommendationStatus] = useState<string>('');
 
   useEffect(() => {
-    fetchProfile();
-  }, [fetchProfile]);
+    void (async () => {
+      await fetchProfiles();
+      await fetchProfile();
+    })();
+  }, [fetchProfiles, fetchProfile]);
 
   useEffect(() => {
     if (profile && !isEditing) {
       setForm(toForm(profile));
     }
   }, [profile, isEditing]);
+
+  useEffect(() => {
+    setRoleRecommendationStatus('');
+  }, [selectedProfileId]);
 
   if (isLoading) {
     return (
@@ -202,10 +232,10 @@ export function ProfilePage() {
     if (!file) return;
     setResumeStatus('');
     try {
-      const result = await uploadResume(file);
+      const result = await uploadResume(file, { createNewProfile: true });
       const extracted = result.extracted;
       setResumeStatus(
-        `Resume parsed (${extracted.file_name}): ${extracted.skills_extracted} skills extracted${
+        `${result.createdNewProfile ? 'Created new profile. ' : ''}Resume parsed (${extracted.file_name}): ${extracted.skills_extracted} skills, ${extracted.experiences_extracted} experiences, ${extracted.projects_extracted} projects, ${extracted.role_interests_extracted ?? 0} target-role recommendations${
           extracted.used_ai ? ' with AI assistance' : ''
         }.`
       );
@@ -220,6 +250,21 @@ export function ProfilePage() {
     }
   };
 
+  const handleRecommendRoles = async () => {
+    setRoleRecommendationStatus('');
+    try {
+      const result = await recommendRoles();
+      setRoleRecommendationStatus(
+        `${result.recommendedCount} AI target-role recommendation${result.recommendedCount === 1 ? '' : 's'} added${
+          result.usedAi ? ' using Gemini' : ' from fallback logic'
+        }.`
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to generate role recommendations.';
+      setRoleRecommendationStatus(message);
+    }
+  };
+
   const lastUpdated = new Date(profile.updatedAt).toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
@@ -229,6 +274,9 @@ export function ProfilePage() {
   const inputCls =
     'w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-blue-500';
   const textareaCls = `${inputCls} min-h-20`;
+  const githubHref = profile.github ? toHref(profile.github) : '';
+  const linkedInHref = profile.linkedIn ? toHref(profile.linkedIn) : '';
+  const portfolioHref = profile.portfolio ? toHref(profile.portfolio) : '';
 
   return (
     <div className="h-full overflow-y-auto">
@@ -262,10 +310,45 @@ export function ProfilePage() {
             )}
           </div>
           <p className="mt-2 text-xs text-zinc-500">Last updated: {lastUpdated}</p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <select
+              value={selectedProfileId ?? profile.id}
+              onChange={(event) => {
+                void selectProfile(event.target.value);
+              }}
+              className="rounded-md border border-zinc-700 bg-zinc-800 px-2.5 py-1.5 text-xs text-zinc-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              {profiles.map((item, index) => (
+                <option key={item.id} value={item.id}>
+                  {item.name || `Profile ${index + 1}`}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => {
+                const nextName = window.prompt('Rename profile', profile.name || '');
+                if (nextName && nextName.trim()) {
+                  void renameSelectedProfile(nextName.trim());
+                }
+              }}
+              className="rounded-md border border-zinc-700 bg-zinc-800 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 transition-colors"
+            >
+              Rename Profile
+            </button>
+            <button
+              onClick={() => {
+                const name = window.prompt('New profile name', '');
+                void createBlankProfile(name ?? undefined);
+              }}
+              className="rounded-md border border-zinc-700 bg-zinc-800 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 transition-colors"
+            >
+              New Profile
+            </button>
+          </div>
           {!isEditing && (
             <div className="mt-3 flex flex-wrap items-center gap-3">
               <label className="cursor-pointer rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-700 transition-colors">
-                {isUploadingResume ? 'Uploading Resume...' : 'Upload Resume (PDF/DOCX/TXT)'}
+                {isUploadingResume ? 'Uploading Resume...' : 'Upload Resume (PDF/DOCX/TXT) — creates new profile'}
                 <input
                   type="file"
                   accept=".pdf,.docx,.txt,.md,.rtf"
@@ -336,18 +419,18 @@ export function ProfilePage() {
             </div>
           ) : (
             <div className="flex items-center gap-4 mt-3 text-xs text-zinc-500">
-              {profile.github && (
-                <a href={toHref(profile.github)} className="hover:text-zinc-300 transition-colors">
+              {githubHref && (
+                <a href={githubHref} target="_blank" rel="noreferrer" className="hover:text-zinc-300 transition-colors">
                   {profile.github}
                 </a>
               )}
-              {profile.linkedIn && (
-                <a href={toHref(profile.linkedIn)} className="hover:text-zinc-300 transition-colors">
+              {linkedInHref && (
+                <a href={linkedInHref} target="_blank" rel="noreferrer" className="hover:text-zinc-300 transition-colors">
                   {profile.linkedIn}
                 </a>
               )}
-              {profile.portfolio && (
-                <a href={toHref(profile.portfolio)} className="hover:text-zinc-300 transition-colors">
+              {portfolioHref && (
+                <a href={portfolioHref} target="_blank" rel="noreferrer" className="hover:text-zinc-300 transition-colors">
                   {profile.portfolio}
                 </a>
               )}
@@ -953,7 +1036,12 @@ export function ProfilePage() {
           </div>
         ) : (
           <>
-            <RoleInterestsSection interests={profile.roleInterests} />
+            <RoleInterestsSection
+              interests={profile.roleInterests}
+              onRecommend={() => void handleRecommendRoles()}
+              isRecommending={isRecommendingRoles}
+              recommendationStatus={roleRecommendationStatus}
+            />
             <SkillsSection skills={profile.skills} />
             <ExperienceSection experiences={profile.experiences} />
             <ProjectsSection projects={profile.projects} />

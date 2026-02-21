@@ -3,6 +3,7 @@ export { delay, MOCK_DELAY_MS } from './types';
 
 export { getJobs, getJob, markJobInterested, importExternalJob } from './jobs';
 export { getResumeVersions, getResumeVersion, exportResumeAsJson, exportResumeAsPdf } from './resumes';
+export type { ResumePdfExportResult } from './resumes';
 export { getApplicationDrafts, getApplicationDraft, updateDraftStatus } from './applications';
 export {
   prepareDraft,
@@ -21,8 +22,17 @@ export type {
 export { runBrowserAssistedDiscovery } from './discovery';
 export type { BrowserAssistedDiscoveryInput, BrowserAssistedDiscoveryResult, BrowserDiscoverySource } from './discovery';
 export { getInterviewKit, getInterviewKits } from './interviews';
-export { getProfile, updateProfile, uploadProfileResume } from './profile';
-export type { ResumeUploadResult, ResumeUploadExtraction } from './profile';
+export {
+  getProfiles,
+  createProfile,
+  activateProfile,
+  renameProfile,
+  getProfile,
+  updateProfile,
+  uploadProfileResume,
+  recommendProfileRoles,
+} from './profile';
+export type { ProfileSummary, ResumeUploadResult, ResumeUploadExtraction, RoleRecommendationResult } from './profile';
 export { getInsights } from './insights';
 export { getSettings, updateSettings } from './settings';
 export type { AppSettings } from './settings';

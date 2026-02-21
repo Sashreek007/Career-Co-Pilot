@@ -4,7 +4,11 @@ WORKDIR /app
 
 COPY requirements.txt ./
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
+    && apt-get install -y --no-install-recommends \
+       curl \
+       texlive-xetex \
+       texlive-latex-extra \
+       texlive-fonts-recommended \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir -r requirements.txt \
     && python -m playwright install chromium

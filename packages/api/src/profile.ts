@@ -29,18 +29,43 @@ type BackendProfile = {
   resume_uploaded_at?: string | null;
 };
 
+type BackendProfileListResponse = {
+  profiles?: Array<Record<string, unknown>>;
+  active_profile_id?: string;
+};
+
+export interface ProfileSummary {
+  id: string;
+  name: string;
+  email: string;
+  location: string;
+  updatedAt: string;
+  resumeFileName?: string;
+  resumeUploadedAt?: string;
+  isActive: boolean;
+}
+
 export interface ResumeUploadExtraction {
   file_name: string;
   skills_extracted: number;
   experiences_extracted: number;
   projects_extracted: number;
   certifications_extracted: number;
+  role_interests_extracted?: number;
   used_ai: boolean;
 }
 
 export interface ResumeUploadResult {
   profile: UserProfile;
+  profileId?: string;
+  createdNewProfile?: boolean;
   extracted: ResumeUploadExtraction;
+}
+
+export interface RoleRecommendationResult {
+  profile: UserProfile;
+  recommendedCount: number;
+  usedAi: boolean;
 }
 
 function toErrorMessage(payload: unknown, fallback: string): string {
@@ -62,6 +87,12 @@ function parseSeniority(value: unknown): RoleInterest['seniority'] {
     return normalized;
   }
   return 'entry';
+}
+
+function appendQuery(path: string, key: string, value?: string): string {
+  if (!value?.trim()) return path;
+  const encoded = encodeURIComponent(value.trim());
+  return `${path}?${key}=${encoded}`;
 }
 
 function normalizeSkill(value: unknown, index: number): Skill {
@@ -238,9 +269,26 @@ function toBackend(payload: Partial<UserProfile>): Record<string, unknown> {
   return body;
 }
 
+function profileSummaryFromBackend(
+  item: Record<string, unknown>,
+  activeProfileId: string
+): ProfileSummary {
+  const id = String(item.id ?? '');
+  return {
+    id,
+    name: String(item.name ?? ''),
+    email: String(item.email ?? ''),
+    location: String(item.location ?? ''),
+    updatedAt: String(item.updated_at ?? new Date().toISOString()),
+    resumeFileName: item.resume_file_name ? String(item.resume_file_name) : undefined,
+    resumeUploadedAt: item.resume_uploaded_at ? String(item.resume_uploaded_at) : undefined,
+    isActive: Boolean(item.is_active) || id === activeProfileId,
+  };
+}
+
 async function seedDefaultProfile(): Promise<UserProfile> {
   const seed = { ...MOCK_PROFILE, id: 'local' };
-  const response = await fetch('/api/profile', {
+  const response = await fetch('/api/profile?profile_id=local', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(toBackend(seed)),
@@ -252,8 +300,67 @@ async function seedDefaultProfile(): Promise<UserProfile> {
   return fromBackend(payload);
 }
 
-export async function getProfile(): Promise<ApiResponse<UserProfile>> {
-  const response = await fetch('/api/profile');
+export async function getProfiles(): Promise<ApiResponse<ProfileSummary[]>> {
+  const response = await fetch('/api/profiles');
+  if (!response.ok) {
+    throw new Error(`Failed to fetch profiles (${response.status})`);
+  }
+  const payload = (await response.json()) as BackendProfileListResponse;
+  const activeId = String(payload.active_profile_id ?? 'local');
+  const profiles = asArray(payload.profiles)
+    .map((item) =>
+      item && typeof item === 'object'
+        ? profileSummaryFromBackend(item as Record<string, unknown>, activeId)
+        : null
+    )
+    .filter((item): item is ProfileSummary => item !== null);
+  return { data: profiles, status: response.status };
+}
+
+export async function createProfile(name?: string): Promise<ApiResponse<UserProfile>> {
+  const response = await fetch('/api/profiles', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(name?.trim() ? { name: name.trim() } : {}),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(toErrorMessage(payload, `Failed to create profile (${response.status})`));
+  }
+  return { data: fromBackend(payload as BackendProfile), status: response.status };
+}
+
+export async function activateProfile(profileId: string): Promise<ApiResponse<{ activeProfileId: string }>> {
+  const response = await fetch(`/api/profiles/${encodeURIComponent(profileId)}/activate`, {
+    method: 'PUT',
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(toErrorMessage(payload, `Failed to activate profile (${response.status})`));
+  }
+  return {
+    data: {
+      activeProfileId: String((payload as { active_profile_id?: unknown }).active_profile_id ?? profileId),
+    },
+    status: response.status,
+  };
+}
+
+export async function renameProfile(profileId: string, name: string): Promise<ApiResponse<UserProfile>> {
+  const response = await fetch(`/api/profiles/${encodeURIComponent(profileId)}/rename`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(toErrorMessage(payload, `Failed to rename profile (${response.status})`));
+  }
+  return { data: fromBackend(payload as BackendProfile), status: response.status };
+}
+
+export async function getProfile(profileId?: string): Promise<ApiResponse<UserProfile>> {
+  const response = await fetch(appendQuery('/api/profile', 'profile_id', profileId));
   if (response.status === 404) {
     const profile = await seedDefaultProfile();
     return { data: profile, status: 200 };
@@ -265,8 +372,8 @@ export async function getProfile(): Promise<ApiResponse<UserProfile>> {
   return { data: fromBackend(payload), status: response.status };
 }
 
-export async function updateProfile(partial: Partial<UserProfile>): Promise<ApiResponse<UserProfile>> {
-  const response = await fetch('/api/profile', {
+export async function updateProfile(partial: Partial<UserProfile>, profileId?: string): Promise<ApiResponse<UserProfile>> {
+  const response = await fetch(appendQuery('/api/profile', 'profile_id', profileId), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(toBackend(partial)),
@@ -278,9 +385,17 @@ export async function updateProfile(partial: Partial<UserProfile>): Promise<ApiR
   return { data: fromBackend(payload as BackendProfile), status: response.status };
 }
 
-export async function uploadProfileResume(file: File): Promise<ApiResponse<ResumeUploadResult>> {
+export async function uploadProfileResume(
+  file: File,
+  profileId?: string,
+  createNewProfile = true
+): Promise<ApiResponse<ResumeUploadResult>> {
   const formData = new FormData();
   formData.append('file', file);
+  if (profileId) {
+    formData.append('profile_id', profileId);
+  }
+  formData.append('create_new_profile', createNewProfile ? 'true' : 'false');
 
   const response = await fetch('/api/profile/resume', {
     method: 'POST',
@@ -297,6 +412,7 @@ export async function uploadProfileResume(file: File): Promise<ApiResponse<Resum
           experiences_extracted: 0,
           projects_extracted: 0,
           certifications_extracted: 0,
+          role_interests_extracted: 0,
           used_ai: false,
         },
       },
@@ -321,13 +437,50 @@ export async function uploadProfileResume(file: File): Promise<ApiResponse<Resum
     experiences_extracted: Number(extractedRaw.experiences_extracted ?? 0),
     projects_extracted: Number(extractedRaw.projects_extracted ?? 0),
     certifications_extracted: Number(extractedRaw.certifications_extracted ?? 0),
+    role_interests_extracted: Number(extractedRaw.role_interests_extracted ?? 0),
     used_ai: Boolean(extractedRaw.used_ai ?? false),
+  };
+
+  const payloadObj = payload as {
+    profile_id?: unknown;
+    created_new_profile?: unknown;
   };
 
   return {
     data: {
       profile: fromBackend(profilePayload),
+      profileId: payloadObj.profile_id ? String(payloadObj.profile_id) : undefined,
+      createdNewProfile: Boolean(payloadObj.created_new_profile),
       extracted,
+    },
+    status: response.status,
+  };
+}
+
+export async function recommendProfileRoles(profileId?: string): Promise<ApiResponse<RoleRecommendationResult>> {
+  const response = await fetch(appendQuery('/api/profile/recommend-roles', 'profile_id', profileId), {
+    method: 'POST',
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(toErrorMessage(payload, `Failed to recommend target roles (${response.status})`));
+  }
+
+  const profilePayload =
+    payload && typeof payload === 'object' && 'profile' in payload
+      ? (payload as { profile: BackendProfile }).profile
+      : (payload as BackendProfile);
+
+  const typedPayload = payload as {
+    recommended_count?: unknown;
+    used_ai?: unknown;
+  };
+
+  return {
+    data: {
+      profile: fromBackend(profilePayload),
+      recommendedCount: Number(typedPayload.recommended_count ?? 0),
+      usedAi: Boolean(typedPayload.used_ai ?? false),
     },
     status: response.status,
   };

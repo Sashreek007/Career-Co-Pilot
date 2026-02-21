@@ -1,50 +1,160 @@
 import { create } from 'zustand';
-import { getProfile, updateProfile, uploadProfileResume } from '@career-copilot/api';
+import { persist } from 'zustand/middleware';
+import {
+  activateProfile,
+  createProfile,
+  getProfile,
+  getProfiles,
+  recommendProfileRoles,
+  renameProfile,
+  updateProfile,
+  uploadProfileResume,
+} from '@career-copilot/api';
+import type { ProfileSummary, ResumeUploadResult, RoleRecommendationResult } from '@career-copilot/api';
 import type { UserProfile } from '@career-copilot/core';
-import type { ResumeUploadResult } from '@career-copilot/api';
 
 interface ProfileStore {
   profile: UserProfile | null;
+  profiles: ProfileSummary[];
+  selectedProfileId: string | null;
   isLoading: boolean;
   isSaving: boolean;
   isUploadingResume: boolean;
-  fetchProfile: () => Promise<void>;
+  isRecommendingRoles: boolean;
+  fetchProfiles: () => Promise<void>;
+  fetchProfile: (profileId?: string) => Promise<void>;
+  selectProfile: (profileId: string) => Promise<void>;
+  createBlankProfile: (name?: string) => Promise<void>;
+  renameSelectedProfile: (name: string) => Promise<void>;
   saveProfile: (partial: Partial<UserProfile>) => Promise<void>;
-  uploadResume: (file: File) => Promise<ResumeUploadResult>;
+  uploadResume: (file: File, options?: { createNewProfile?: boolean }) => Promise<ResumeUploadResult>;
+  recommendRoles: () => Promise<RoleRecommendationResult>;
 }
 
-export const useProfileStore = create<ProfileStore>((set) => ({
-  profile: null,
-  isLoading: false,
-  isSaving: false,
-  isUploadingResume: false,
-  fetchProfile: async () => {
-    set({ isLoading: true });
-    const res = await getProfile();
-    set({ profile: res.data, isLoading: false });
-  },
-  saveProfile: async (partial) => {
-    set({ isSaving: true });
-    try {
-      const res = await updateProfile(partial);
-      set({ profile: res.data, isSaving: false });
-    } catch (error) {
-      set({ isSaving: false });
-      throw error;
+function dedupeProfiles(items: ProfileSummary[]): ProfileSummary[] {
+  const seen = new Set<string>();
+  const result: ProfileSummary[] = [];
+  for (const item of items) {
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    result.push(item);
+  }
+  return result;
+}
+
+export const useProfileStore = create<ProfileStore>()(
+  persist(
+    (set, get) => ({
+      profile: null,
+      profiles: [],
+      selectedProfileId: null,
+      isLoading: false,
+      isSaving: false,
+      isUploadingResume: false,
+      isRecommendingRoles: false,
+      fetchProfiles: async () => {
+        const response = await getProfiles();
+        const profiles = dedupeProfiles(response.data);
+        const active = profiles.find((item) => item.isActive) ?? profiles[0] ?? null;
+        set({
+          profiles,
+          selectedProfileId: active?.id ?? null,
+        });
+      },
+      fetchProfile: async (profileId) => {
+        set({ isLoading: true });
+        try {
+          if (get().profiles.length === 0) {
+            await get().fetchProfiles();
+          }
+          const requestedId = profileId ?? get().selectedProfileId ?? undefined;
+          const response = await getProfile(requestedId);
+          const selectedId = response.data.id;
+
+          await get().fetchProfiles();
+          set({ profile: response.data, selectedProfileId: selectedId, isLoading: false });
+        } catch (error) {
+          set({ isLoading: false });
+          throw error;
+        }
+      },
+      selectProfile: async (profileId) => {
+        await activateProfile(profileId);
+        const response = await getProfile(profileId);
+        await get().fetchProfiles();
+        set({ profile: response.data, selectedProfileId: profileId });
+      },
+      createBlankProfile: async (name) => {
+        const response = await createProfile(name);
+        await activateProfile(response.data.id);
+        await get().fetchProfiles();
+        set({ profile: response.data, selectedProfileId: response.data.id });
+      },
+      renameSelectedProfile: async (name) => {
+        const selected = get().selectedProfileId;
+        if (!selected) return;
+        const response = await renameProfile(selected, name);
+        const updatedProfile = response.data;
+        await get().fetchProfiles();
+        set({ profile: updatedProfile, selectedProfileId: updatedProfile.id });
+      },
+      saveProfile: async (partial) => {
+        const selected = get().selectedProfileId ?? undefined;
+        set({ isSaving: true });
+        try {
+          const response = await updateProfile(partial, selected);
+          await get().fetchProfiles();
+          set({ profile: response.data, selectedProfileId: response.data.id, isSaving: false });
+        } catch (error) {
+          set({ isSaving: false });
+          throw error;
+        }
+      },
+      uploadResume: async (file, options) => {
+        const selected = get().selectedProfileId ?? undefined;
+        const createNewProfile = options?.createNewProfile ?? true;
+        set({ isUploadingResume: true });
+        try {
+          const response = await uploadProfileResume(file, selected, createNewProfile);
+          if (response.error) {
+            throw new Error(response.error);
+          }
+          const profile = response.data.profile;
+          const nextProfileId = response.data.profileId ?? profile.id;
+          await activateProfile(nextProfileId);
+          await get().fetchProfiles();
+          set({ profile, selectedProfileId: nextProfileId, isUploadingResume: false });
+          return response.data;
+        } catch (error) {
+          set({ isUploadingResume: false });
+          throw error;
+        }
+      },
+      recommendRoles: async () => {
+        const selected = get().selectedProfileId ?? undefined;
+        set({ isRecommendingRoles: true });
+        try {
+          const response = await recommendProfileRoles(selected);
+          if (response.error) {
+            throw new Error(response.error);
+          }
+          const result = response.data;
+          await get().fetchProfiles();
+          set({
+            profile: result.profile,
+            selectedProfileId: result.profile.id,
+            isRecommendingRoles: false,
+          });
+          return result;
+        } catch (error) {
+          set({ isRecommendingRoles: false });
+          throw error;
+        }
+      },
+    }),
+    {
+      name: 'career-copilot-profile-selection',
+      partialize: (state) => ({ selectedProfileId: state.selectedProfileId }),
     }
-  },
-  uploadResume: async (file) => {
-    set({ isUploadingResume: true });
-    try {
-      const res = await uploadProfileResume(file);
-      if (res.error) {
-        throw new Error(res.error);
-      }
-      set({ profile: res.data.profile, isUploadingResume: false });
-      return res.data;
-    } catch (error) {
-      set({ isUploadingResume: false });
-      throw error;
-    }
-  },
-}));
+  )
+);
