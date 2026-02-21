@@ -53,6 +53,7 @@ const US_HINTS = [
   'chicago',
   'boston',
 ];
+const VISUAL_BROWSER_URL = 'http://localhost:7900/?autoconnect=1&resize=scale';
 
 interface AssistedReviewState {
   draftId: string;
@@ -156,7 +157,7 @@ export function JobFeedPage() {
       [
         'AI-Assisted Apply runs in user-assisted mode.',
         useVisibleBrowser
-          ? 'Visible Browser mode is ON: the agent will operate your local Chrome window.'
+          ? 'Visible Browser mode is ON: the agent will operate the Docker visual browser session.'
           : 'Visible Browser mode is OFF: agent runs in container browser with screenshots/logs.',
         'Final submit still requires explicit confirmation.',
         '',
@@ -418,13 +419,20 @@ export function JobFeedPage() {
               <h3 className="text-base font-semibold text-zinc-100">AI Browser Operation In Progress</h3>
               <p className="mt-1 text-sm text-zinc-400">
                 {useVisibleBrowser
-                  ? 'Agent is connected to your local Chrome. You can intervene directly in that browser window.'
+                  ? 'Agent is connected to the visual browser session. You can intervene directly in that browser window.'
                   : 'Agent is running in managed browser mode. Watch screenshots and operator logs below.'}
               </p>
               {useVisibleBrowser && (
-                <p className="mt-1 text-xs text-zinc-500">
-                  If not connected yet, start Chrome with remote debugging on port 9222.
-                </p>
+                <div className="mt-2">
+                  <a
+                    href={VISUAL_BROWSER_URL}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center rounded-md bg-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-100 hover:bg-zinc-600"
+                  >
+                    Open Visual Browser
+                  </a>
+                </div>
               )}
             </div>
 

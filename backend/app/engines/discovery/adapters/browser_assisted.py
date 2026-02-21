@@ -33,7 +33,7 @@ def _discovery_cdp_endpoint() -> str:
     value = os.environ.get("DISCOVERY_BROWSER_CDP_ENDPOINT", "").strip()
     if value:
         return value
-    return "http://host.docker.internal:9222"
+    return "http://browser:9222"
 
 
 def _discovery_visible_browser_default() -> bool:

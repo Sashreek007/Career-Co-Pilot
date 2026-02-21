@@ -638,7 +638,7 @@ def _cdp_endpoint() -> str:
     value = os.environ.get("APPLICATION_CDP_ENDPOINT", "").strip()
     if value:
         return value
-    return "http://host.docker.internal:9222"
+    return "http://browser:9222"
 
 
 def _normalize_manual_pause_seconds(value: int | None) -> int:
@@ -729,7 +729,7 @@ async def _run_submission(
     screenshot_path = SCREENSHOT_DIR / f"{draft_id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.png"
     live_screenshot_path = SCREENSHOT_DIR / f"{draft_id}-live.png"
     manual_pause_seconds = _normalize_manual_pause_seconds(pause_for_manual_input_seconds)
-    run_mode = "visible_local_browser_cdp" if use_visible_browser else ("headless" if _should_launch_headless() else "headed")
+    run_mode = "visible_browser_cdp" if use_visible_browser else ("headless" if _should_launch_headless() else "headed")
     _progress_start(draft_id, mode=run_mode)
     set_submission_guidance(draft_id, "")
     _progress_event(draft_id, f"Starting operator in {run_mode} mode.")
@@ -748,15 +748,15 @@ async def _run_submission(
         playwright = await async_playwright().start()
         if use_visible_browser:
             cdp_endpoint = _cdp_endpoint()
-            _progress_event(draft_id, f"Connecting to local browser via CDP ({cdp_endpoint}).")
+            _progress_event(draft_id, f"Connecting to visible browser via CDP ({cdp_endpoint}).")
             try:
                 browser = await playwright.chromium.connect_over_cdp(cdp_endpoint)
             except Exception as exc:
                 raise BrowserUnavailableError(
-                    "Could not connect to local Chrome for visible mode. "
-                    "Start Chrome with remote debugging first. "
-                    "Example (macOS): open -na 'Google Chrome' --args "
-                    "--remote-debugging-port=9222 --user-data-dir=/tmp/career-copilot-cdp"
+                    "Could not connect to the visible browser session. "
+                    "Make sure the Docker browser service is running and open http://localhost:7900 "
+                    "to view/intervene. If you want to use host Chrome instead, set "
+                    "APPLICATION_CDP_ENDPOINT to your host debugging endpoint."
                 ) from exc
 
             close_browser = False
