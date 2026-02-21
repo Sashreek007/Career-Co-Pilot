@@ -123,9 +123,9 @@ def _annotate_user_has(
 
 
 def _sanitize_description(value: str | None) -> str:
-    text = str(value or "")
+    text = unescape(str(value or ""))
     if "<" not in text and ">" not in text:
-        return _clean_text(unescape(text))
+        return _clean_text(text)
 
     no_scripts = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", text)
     with_line_breaks = re.sub(r"(?i)<\s*br\s*/?>", "\n", no_scripts)

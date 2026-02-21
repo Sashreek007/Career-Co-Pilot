@@ -9,9 +9,36 @@ interface JobDetailProps {
   onMarkInterested: (jobId: string) => void;
 }
 
+function formatDescription(value: string): string {
+  const decoded = value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ');
+
+  if (!/[<>]/.test(decoded)) {
+    return decoded.trim();
+  }
+
+  const withBreaks = decoded
+    .replace(/<\s*br\s*\/?>/gi, '\n')
+    .replace(/<\/\s*(p|div|li|h[1-6])\s*>/gi, '\n')
+    .replace(/<\s*li[^>]*>/gi, '- ');
+
+  return withBreaks
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/[ \t\r\f\v]+/g, ' ')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export function JobDetail({ job, onPrepareResume, onPrepareApplication, onMarkInterested }: JobDetailProps) {
   const requiredSkills = job.skills.filter((s) => s.required);
   const optionalSkills = job.skills.filter((s) => !s.required);
+  const description = formatDescription(job.description);
 
   return (
     <div className="h-full flex flex-col">
@@ -131,7 +158,7 @@ export function JobDetail({ job, onPrepareResume, onPrepareApplication, onMarkIn
             Description
           </h3>
           <div className="text-sm text-zinc-300 leading-relaxed whitespace-pre-line">
-            {job.description}
+            {description}
           </div>
         </section>
 
