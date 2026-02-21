@@ -3,7 +3,7 @@ import json
 import logging
 from typing import Any
 from urllib.parse import quote_plus
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from .base import JobSourceAdapter, RawJobData
 
@@ -11,7 +11,14 @@ logger = logging.getLogger(__name__)
 
 
 def _fetch_payload(url: str) -> dict[str, Any]:
-    with urlopen(url, timeout=20) as response:  # noqa: S310
+    request = Request(
+        url,
+        headers={
+            "User-Agent": "Career-Co-Pilot/0.1 (+https://github.com/Sashreek007/Career-Co-Pilot)",
+            "Accept": "application/json",
+        },
+    )
+    with urlopen(request, timeout=20) as response:  # noqa: S310
         return json.loads(response.read().decode("utf-8"))
 
 

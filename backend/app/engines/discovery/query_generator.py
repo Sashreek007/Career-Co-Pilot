@@ -54,8 +54,11 @@ def generate_queries(role: str, location: str, remote: bool, max_queries: int = 
     ordered: list[str] = []
     seen: set[str] = set()
     for candidate in candidates:
+        base_queries: list[str] = [candidate]
         for location_token in location_tokens:
-            base_query = f"{candidate} {location_token}".strip()
+            base_queries.append(f"{candidate} {location_token}".strip())
+
+        for base_query in base_queries:
             for modifier in ["", *modifiers]:
                 query = f"{base_query} {modifier}".strip()
                 normalized = " ".join(query.split()).lower()

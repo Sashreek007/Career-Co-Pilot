@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .db.schema import init_db
 from .routers import (
     applications,
+    discovery,
     drafts,
     health,
     insights,
@@ -13,6 +14,7 @@ from .routers import (
     resumes,
     settings,
 )
+from .scheduler import start_discovery_scheduler, stop_discovery_scheduler
 
 app = FastAPI(title="Career Co-Pilot API", version="0.1.0")
 
@@ -25,8 +27,14 @@ app.add_middleware(
 )
 
 @app.on_event("startup")
-def startup() -> None:
+async def startup() -> None:
     init_db()
+    start_discovery_scheduler()
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    await stop_discovery_scheduler()
 
 
 app.include_router(health.router)
@@ -36,6 +44,7 @@ app.include_router(profile.router)
 app.include_router(jobs.router)
 app.include_router(applications.router)
 app.include_router(drafts.router)
+app.include_router(discovery.router)
 app.include_router(resumes.router)
 app.include_router(interviews.router)
 app.include_router(settings.router)

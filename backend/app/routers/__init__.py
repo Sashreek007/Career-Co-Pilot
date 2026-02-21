@@ -1,5 +1,6 @@
 from . import (
     applications,
+    discovery,
     drafts,
     health,
     insights,
@@ -13,6 +14,7 @@ from . import (
 
 __all__ = [
     "applications",
+    "discovery",
     "drafts",
     "health",
     "insights",
