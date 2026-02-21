@@ -11,8 +11,10 @@ import {
   getAssistedProgress,
   importExternalJob,
   prepareDraft,
+  runBrowserAssistedDiscovery,
   runAssistedConfirmSubmit,
   runAssistedFill,
+  sendAssistedGuidance,
 } from '@career-copilot/api';
 
 type LocationFilter = 'canada' | 'us' | 'remote' | 'all';
@@ -87,10 +89,13 @@ export function JobFeedPage() {
   const [useVisibleBrowser, setUseVisibleBrowser] = useState(true);
   const [assistedReview, setAssistedReview] = useState<AssistedReviewState | null>(null);
   const [isSubmittingFinal, setIsSubmittingFinal] = useState(false);
+  const [isDiscovering, setIsDiscovering] = useState(false);
   const [isRunningFill, setIsRunningFill] = useState(false);
   const [runningDraftId, setRunningDraftId] = useState<string | null>(null);
   const [runningJobUrl, setRunningJobUrl] = useState<string | null>(null);
   const [runningProgress, setRunningProgress] = useState<AssistedProgressResult | null>(null);
+  const [guidanceText, setGuidanceText] = useState('');
+  const [isSendingGuidance, setIsSendingGuidance] = useState(false);
   const [runningTab, setRunningTab] = useState<ActivityTab>('browser');
   const [reviewTab, setReviewTab] = useState<ActivityTab>('browser');
   const progressTimerRef = useRef<number | null>(null);
@@ -177,6 +182,7 @@ export function JobFeedPage() {
 
     setRunningTab('browser');
     setRunningProgress(null);
+    setGuidanceText('');
     setRunningDraftId(prepared.data.id);
     setRunningJobUrl(targetJob.sourceUrl || null);
     setIsRunningFill(true);
@@ -269,6 +275,60 @@ export function JobFeedPage() {
     window.alert('External job imported. You can now run Assisted Apply on it.');
   };
 
+  const handleBrowserAssistedDiscovery = async () => {
+    const sourceInput = (
+      window.prompt('Discovery source: linkedin or indeed', 'linkedin') ?? 'linkedin'
+    )
+      .trim()
+      .toLowerCase();
+    const source = sourceInput === 'indeed' ? 'indeed' : 'linkedin';
+
+    const defaultQuery =
+      locationFilter === 'canada'
+        ? 'software engineer canada'
+        : locationFilter === 'us'
+          ? 'software engineer united states'
+          : 'software engineer remote';
+    const query = (window.prompt('Search query for browser-assisted discovery', defaultQuery) ?? '').trim();
+    if (!query) return;
+
+    setIsDiscovering(true);
+    const result = await runBrowserAssistedDiscovery({
+      source,
+      query,
+      useVisibleBrowser,
+      waitSeconds: 28,
+      maxResults: 35,
+      minMatchScore: 0.1,
+    });
+    setIsDiscovering(false);
+
+    if (result.error) {
+      window.alert(result.error);
+      return;
+    }
+
+    await fetchJobs();
+    window.alert(
+      `Discovery complete (${result.data.source}): ${result.data.jobs_new} new jobs imported from ${result.data.jobs_found} found.`
+    );
+  };
+
+  const handleSendGuidance = async () => {
+    const draftId = runningDraftId;
+    const message = guidanceText.trim();
+    if (!draftId || !message || isSendingGuidance) return;
+    setIsSendingGuidance(true);
+    const result = await sendAssistedGuidance(draftId, message);
+    setIsSendingGuidance(false);
+    if (result.error) {
+      window.alert(result.error);
+      return;
+    }
+    setGuidanceText('');
+    await pollProgressOnce(draftId);
+  };
+
   const runningScreenshotUrl = withCacheBust(
     runningProgress?.latest_screenshot_url,
     runningProgress?.updated_at
@@ -303,6 +363,14 @@ export function JobFeedPage() {
               />
               Visible Browser
             </label>
+            <button
+              onClick={() => void handleBrowserAssistedDiscovery()}
+              disabled={isDiscovering}
+              className="rounded-md bg-blue-700 px-3 py-1.5 text-xs font-medium text-zinc-100 transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-70"
+              title="Use your browser session to search LinkedIn/Indeed and import matched jobs"
+            >
+              {isDiscovering ? 'Finding Jobs…' : 'Find via Browser'}
+            </button>
             <button
               onClick={() => void handleImportExternalJob()}
               className="rounded-md bg-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-100 transition-colors hover:bg-zinc-600"
@@ -426,8 +494,30 @@ export function JobFeedPage() {
               )}
             </div>
 
-            <div className="border-t border-zinc-800 px-5 py-3 text-xs text-zinc-400">
-              Draft: {runningDraftId} • Status: {runningProgress?.status ?? 'running'}
+            <div className="border-t border-zinc-800 px-5 py-3">
+              <p className="mb-2 text-xs text-zinc-400">
+                Draft: {runningDraftId} • Status: {runningProgress?.status ?? 'running'}
+              </p>
+              <div className="space-y-2">
+                <label className="block text-[11px] font-medium uppercase tracking-wide text-zinc-500">
+                  Guide Agent
+                </label>
+                <div className="flex items-start gap-2">
+                  <textarea
+                    value={guidanceText}
+                    onChange={(event) => setGuidanceText(event.target.value)}
+                    placeholder="Example: skip optional survey questions and continue to review page."
+                    className="min-h-16 flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1.5 text-xs text-zinc-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  />
+                  <button
+                    onClick={() => void handleSendGuidance()}
+                    disabled={isSendingGuidance || !guidanceText.trim()}
+                    className="rounded-md bg-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-100 hover:bg-zinc-600 disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    {isSendingGuidance ? 'Sending…' : 'Send'}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>

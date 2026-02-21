@@ -43,6 +43,12 @@ export interface AssistedProgressResult {
   error?: string | null;
 }
 
+export interface AssistedGuidanceResult {
+  ok: boolean;
+  draft_id: string;
+  applied_guidance: string;
+}
+
 export interface AssistedRunOptions {
   useVisibleBrowser?: boolean;
   pauseForManualInputSeconds?: number;
@@ -234,6 +240,34 @@ export async function getAssistedProgress(
         typeof payload.latest_screenshot_url === 'string' ? payload.latest_screenshot_url : undefined,
       events,
       error: typeof payload.error === 'string' ? payload.error : null,
+    },
+    status: response.status,
+  };
+}
+
+export async function sendAssistedGuidance(
+  draftId: string,
+  message: string
+): Promise<ApiResponse<AssistedGuidanceResult>> {
+  const response = await fetch(`/api/drafts/${encodeURIComponent(draftId)}/guidance`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message }),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    return {
+      data: { ok: false, draft_id: draftId, applied_guidance: '' },
+      error: toErrorMessage(payload, 'Failed to send operator guidance'),
+      status: response.status,
+    };
+  }
+  return {
+    data: {
+      ok: Boolean(payload.ok),
+      draft_id: typeof payload.draft_id === 'string' ? payload.draft_id : draftId,
+      applied_guidance:
+        typeof payload.applied_guidance === 'string' ? payload.applied_guidance : '',
     },
     status: response.status,
   };

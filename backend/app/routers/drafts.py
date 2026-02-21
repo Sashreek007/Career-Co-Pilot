@@ -17,6 +17,7 @@ from ..engines.applications.submission_engine import (
     RateLimitError,
     confirm_submit_application,
     get_submission_progress,
+    set_submission_guidance,
     submit_application,
 )
 
@@ -46,6 +47,10 @@ class AssistedFinalSubmitRequest(BaseModel):
     acknowledge_platform_terms: bool = False
     confirm_final_submit: bool = False
     use_visible_browser: bool = False
+
+
+class AssistedGuidanceRequest(BaseModel):
+    message: str
 
 
 def db_conn():
@@ -280,3 +285,14 @@ def get_draft_progress(
             screenshot_path if isinstance(screenshot_path, str) else None
         ),
     }
+
+
+@router.post("/{draft_id}/guidance")
+def set_draft_guidance(
+    draft_id: str,
+    payload: AssistedGuidanceRequest,
+    db: sqlite3.Connection = Depends(db_conn),
+):
+    _get_draft_or_404(draft_id, db)
+    applied = set_submission_guidance(draft_id, payload.message)
+    return {"ok": True, "draft_id": draft_id, "applied_guidance": applied}

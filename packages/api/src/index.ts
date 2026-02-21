@@ -10,8 +10,16 @@ export {
   runAssistedFill,
   runAssistedConfirmSubmit,
   getAssistedProgress,
+  sendAssistedGuidance,
 } from './drafts';
-export type { AssistedProgressResult, AssistedRunOptions, AssistedProgressEvent } from './drafts';
+export type {
+  AssistedProgressResult,
+  AssistedRunOptions,
+  AssistedProgressEvent,
+  AssistedGuidanceResult,
+} from './drafts';
+export { runBrowserAssistedDiscovery } from './discovery';
+export type { BrowserAssistedDiscoveryInput, BrowserAssistedDiscoveryResult, BrowserDiscoverySource } from './discovery';
 export { getInterviewKit, getInterviewKits } from './interviews';
 export { getProfile, updateProfile } from './profile';
 export { getInsights } from './insights';

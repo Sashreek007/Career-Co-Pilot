@@ -14,6 +14,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - sqlite_data:/app/data
     healthcheck:
