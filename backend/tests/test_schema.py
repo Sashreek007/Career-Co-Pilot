@@ -16,6 +16,7 @@ EXPECTED_TABLES = {
     "interview_kits",
     "insights_cache",
     "discovery_runs",
+    "settings",
 }
 
 

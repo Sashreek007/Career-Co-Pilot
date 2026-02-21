@@ -92,6 +92,17 @@ CREATE TABLE IF NOT EXISTS discovery_runs (
     source TEXT,
     status TEXT
 );
+
+CREATE TABLE IF NOT EXISTS settings (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    daily_submission_cap INTEGER DEFAULT 10,
+    discovery_interval_minutes INTEGER DEFAULT 60,
+    default_resume_template TEXT DEFAULT 'jakes',
+    export_path TEXT DEFAULT '~/Downloads',
+    llm_provider TEXT DEFAULT 'gemini',
+    llm_api_key TEXT,
+    updated_at TEXT DEFAULT (datetime('now'))
+);
 """
 
 
@@ -99,6 +110,13 @@ def init_db(db_path: str | Path | None = None) -> None:
     conn = get_db(db_path)
     try:
         conn.executescript(SCHEMA_SQL)
+        conn.execute(
+            """
+            INSERT INTO settings (id)
+            VALUES (1)
+            ON CONFLICT(id) DO NOTHING
+            """
+        )
         conn.commit()
     finally:
         conn.close()

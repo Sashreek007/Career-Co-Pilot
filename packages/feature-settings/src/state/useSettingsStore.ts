@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { getSettings, updateSettings } from '@career-copilot/api';
 
 interface SettingsState {
   dailySubmissionCap: number;
@@ -14,8 +15,14 @@ interface SettingsState {
   setExportPath: (v: string) => void;
   setLlmProvider: (v: SettingsState['llmProvider']) => void;
   setLlmApiKey: (v: string) => void;
+  hydrateFromBackend: () => Promise<void>;
   resetAll: () => void;
 }
+
+type SyncSettingsPayload = Pick<
+  SettingsState,
+  'dailySubmissionCap' | 'discoveryIntervalMinutes' | 'defaultResumeTemplate' | 'exportPath' | 'llmProvider' | 'llmApiKey'
+>;
 
 const DEFAULTS = {
   dailySubmissionCap: 10,
@@ -28,16 +35,67 @@ const DEFAULTS = {
 
 export const useSettingsStore = create<SettingsState>()(
   persist(
-    (set) => ({
+    (set) => {
+      const syncPatch = (patch: Partial<SyncSettingsPayload>) => {
+        void updateSettings({
+          dailySubmissionCap: patch.dailySubmissionCap,
+          discoveryIntervalMinutes: patch.discoveryIntervalMinutes,
+          defaultResumeTemplate: patch.defaultResumeTemplate,
+          exportPath: patch.exportPath,
+          llmProvider: patch.llmProvider,
+          llmApiKey: patch.llmApiKey,
+        }).catch((error) => {
+          console.warn('[settings] backend sync failed', error);
+        });
+      };
+
+      return {
       ...DEFAULTS,
-      setDailySubmissionCap: (v) => set({ dailySubmissionCap: v }),
-      setDiscoveryInterval: (v) => set({ discoveryIntervalMinutes: v }),
-      setDefaultTemplate: (v) => set({ defaultResumeTemplate: v }),
-      setExportPath: (v) => set({ exportPath: v }),
-      setLlmProvider: (v) => set({ llmProvider: v }),
-      setLlmApiKey: (v) => set({ llmApiKey: v }),
-      resetAll: () => set(DEFAULTS),
-    }),
+      setDailySubmissionCap: (v) => {
+        set({ dailySubmissionCap: v });
+        syncPatch({ dailySubmissionCap: v });
+      },
+      setDiscoveryInterval: (v) => {
+        set({ discoveryIntervalMinutes: v });
+        syncPatch({ discoveryIntervalMinutes: v });
+      },
+      setDefaultTemplate: (v) => {
+        set({ defaultResumeTemplate: v });
+        syncPatch({ defaultResumeTemplate: v });
+      },
+      setExportPath: (v) => {
+        set({ exportPath: v });
+        syncPatch({ exportPath: v });
+      },
+      setLlmProvider: (v) => {
+        set({ llmProvider: v });
+        syncPatch({ llmProvider: v });
+      },
+      setLlmApiKey: (v) => {
+        set({ llmApiKey: v });
+        syncPatch({ llmApiKey: v });
+      },
+      hydrateFromBackend: async () => {
+        try {
+          const response = await getSettings();
+          set({
+            dailySubmissionCap: response.data.dailySubmissionCap,
+            discoveryIntervalMinutes: response.data.discoveryIntervalMinutes,
+            defaultResumeTemplate: response.data.defaultResumeTemplate,
+            exportPath: response.data.exportPath,
+            llmProvider: response.data.llmProvider,
+            llmApiKey: response.data.llmApiKey,
+          });
+        } catch (error) {
+          console.warn('[settings] failed to load backend settings', error);
+        }
+      },
+      resetAll: () => {
+        set(DEFAULTS);
+        syncPatch(DEFAULTS);
+      },
+      };
+    },
     { name: 'career-copilot-settings' }
   )
 );

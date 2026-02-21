@@ -18,7 +18,6 @@ import sqlite3
 from datetime import datetime
 from typing import Any
 
-from ..resume.jd_analyzer import _extract_skills  # reuse skill extraction
 from ...clients.gemini import get_gemini_client
 
 logger = logging.getLogger(__name__)
@@ -33,9 +32,26 @@ _TYPE_KEYWORDS: dict[str, list[str]] = {
 }
 
 
+def _normalise_skill_names(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    names: list[str] = []
+    for value in values:
+        if isinstance(value, str):
+            cleaned = value.strip()
+            if cleaned:
+                names.append(cleaned)
+            continue
+        if isinstance(value, dict):
+            name = value.get("name")
+            if isinstance(name, str) and name.strip():
+                names.append(name.strip())
+    return names
+
+
 def classify_interview_type(description: str) -> str:
     """Return the most likely interview type based on keyword matching."""
-    text_lower = description.lower()
+    text_lower = str(description or "").lower()
     scores: dict[str, int] = {}
     for itype, keywords in _TYPE_KEYWORDS.items():
         scores[itype] = sum(1 for kw in keywords if kw in text_lower)
@@ -76,7 +92,7 @@ async def _generate_questions(
             interview_type=interview_type.replace("_", " "),
             job_title=job.get("title", "Software Engineer"),
             company=job.get("company", "the company"),
-            description=(job.get("description", ""))[:3000],
+            description=str(job.get("description", ""))[:3000],
         )
         response = await client.generate_content_async(prompt)
         raw = response.text.strip()
@@ -91,6 +107,18 @@ async def _generate_questions(
             # Normalise keys to match our schema
             normalised: list[dict[str, Any]] = []
             for i, q in enumerate(questions):
+                if isinstance(q, str):
+                    normalised.append({
+                        "id": f"q-{i+1:02d}",
+                        "text": q,
+                        "category": "technical",
+                        "difficulty": "medium",
+                        "contextNotes": "",
+                        "skills": [],
+                    })
+                    continue
+                if not isinstance(q, dict):
+                    continue
                 normalised.append({
                     "id": f"q-{i+1:02d}",
                     "text": q.get("text", ""),
@@ -152,12 +180,18 @@ async def _generate_star_drafts(
     client = get_gemini_client()
     drafts: list[dict[str, Any]] = []
 
-    skills_str = ", ".join((profile.get("skills_json") or [])[:15])
+    skills_str = ", ".join(_normalise_skill_names(profile.get("skills_json"))[:15])
     experience = profile.get("experience_json") or []
     recent_role = ""
-    if experience:
-        first = experience[0] if isinstance(experience, list) else {}
-        recent_role = f"{first.get('role', '')} at {first.get('company', '')}"
+    if isinstance(experience, list) and experience:
+        first = experience[0]
+        if isinstance(first, dict):
+            role = str(first.get("role", "")).strip()
+            company = str(first.get("company", "")).strip()
+            if role and company:
+                recent_role = f"{role} at {company}"
+            else:
+                recent_role = role or company
 
     for q in behavioral:
         draft: dict[str, Any] = {

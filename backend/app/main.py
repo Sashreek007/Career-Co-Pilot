@@ -1,7 +1,18 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .db.schema import init_db
-from .routers import applications, drafts, health, insights, jobs, outcomes, profile
+from .routers import (
+    applications,
+    drafts,
+    health,
+    insights,
+    interviews,
+    jobs,
+    outcomes,
+    profile,
+    resumes,
+    settings,
+)
 
 app = FastAPI(title="Career Co-Pilot API", version="0.1.0")
 
@@ -25,6 +36,9 @@ app.include_router(profile.router)
 app.include_router(jobs.router)
 app.include_router(applications.router)
 app.include_router(drafts.router)
+app.include_router(resumes.router)
+app.include_router(interviews.router)
+app.include_router(settings.router)
 
 
 @app.get("/")

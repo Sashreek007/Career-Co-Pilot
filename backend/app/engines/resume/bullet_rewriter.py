@@ -11,7 +11,7 @@ STRICT RULES (enforced by prompt and post-processing):
 
 import logging
 
-from ..clients.gemini import get_gemini_client
+from ...clients.gemini import get_gemini_client
 
 logger = logging.getLogger(__name__)
 

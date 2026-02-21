@@ -11,12 +11,12 @@ import re
 from pathlib import Path
 from typing import Any
 
-from ..clients.gemini import get_gemini_client
+from ...clients.gemini import get_gemini_client
 
 logger = logging.getLogger(__name__)
 
 # ── Load skill taxonomy once at import time ────────────────────────────────
-_TAXONOMY_PATH = Path(__file__).resolve().parents[2] / "app" / "data" / "skill_taxonomy.json"
+_TAXONOMY_PATH = Path(__file__).resolve().parents[2] / "data" / "skill_taxonomy.json"
 
 _SKILLS: list[str] = []
 if _TAXONOMY_PATH.exists():
