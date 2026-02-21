@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Job } from '@career-copilot/core';
+import type { Job, UserProfile } from '@career-copilot/core';
 import { SplitPane, PageHeader } from '@career-copilot/ui';
 import { useJobsStore } from '../state/useJobsStore';
 import { JobList } from './JobList';
@@ -14,6 +14,7 @@ import {
   checkBrowserConnection,
   getChatMessages,
   getAssistedProgress,
+  getProfile,
   importExternalJob,
   postChatMessage,
   prepareDraft,
@@ -86,9 +87,11 @@ interface ImportFormState {
   location: string;
 }
 
-interface DiscoveryFormState {
-  source: BrowserDiscoverySource;
+interface AutoDiscoveryPlan {
+  role: string;
+  locationHint: string;
   query: string;
+  sources: BrowserDiscoverySource[];
 }
 
 function includesAny(haystack: string, values: string[]): boolean {
@@ -111,6 +114,31 @@ function withCacheBust(url: string | undefined, token?: string | null): string |
   return `${url}${sep}t=${encodeURIComponent(token ?? Date.now().toString())}`;
 }
 
+function pickLocationHint(filter: LocationFilter, profile: UserProfile | null): string {
+  if (filter === 'canada') return 'canada';
+  if (filter === 'us') return 'united states';
+  if (filter === 'remote') return 'remote';
+  const firstRoleLocation = profile?.roleInterests?.[0]?.locations?.[0]?.trim();
+  if (firstRoleLocation) return firstRoleLocation;
+  const profileLocation = profile?.location?.trim();
+  if (profileLocation) return profileLocation;
+  return 'canada';
+}
+
+function buildAutoDiscoveryPlan(filter: LocationFilter, profile: UserProfile | null): AutoDiscoveryPlan {
+  const role =
+    profile?.roleInterests?.map((item) => item.title.trim()).find((title) => Boolean(title)) ||
+    'software engineer';
+  const locationHint = pickLocationHint(filter, profile);
+  const query = `${role} ${locationHint}`.replace(/\s+/g, ' ').trim();
+  return {
+    role,
+    locationHint,
+    query,
+    sources: ['linkedin', 'indeed'],
+  };
+}
+
 export function JobFeedPage() {
   const { jobs, selectedJobId, isLoading, fetchJobs, selectJob, markInterested } = useJobsStore();
   const [locationFilter, setLocationFilter] = useState<LocationFilter>('canada');
@@ -131,8 +159,10 @@ export function JobFeedPage() {
   const [showImportModal, setShowImportModal] = useState(false);
   const [showDiscoveryModal, setShowDiscoveryModal] = useState(false);
   const [showBrowserHelperModal, setShowBrowserHelperModal] = useState(false);
+  const [isPlanningDiscovery, setIsPlanningDiscovery] = useState(false);
   const [browserStatus, setBrowserStatus] = useState<BrowserConnectionStatus | null>(null);
   const [isCheckingBrowser, setIsCheckingBrowser] = useState(false);
+  const [autoDiscoveryPlan, setAutoDiscoveryPlan] = useState<AutoDiscoveryPlan | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [isSendingChat, setIsSendingChat] = useState(false);
@@ -142,10 +172,6 @@ export function JobFeedPage() {
     title: '',
     company: '',
     location: 'Remote',
-  });
-  const [discoveryForm, setDiscoveryForm] = useState<DiscoveryFormState>({
-    source: 'linkedin',
-    query: '',
   });
 
   const filteredJobs = useMemo(
@@ -385,47 +411,71 @@ export function JobFeedPage() {
     setIsCheckingBrowser(false);
   };
 
-  const openDiscoveryModal = () => {
-    const defaultQuery =
-      locationFilter === 'canada'
-        ? 'software engineer canada'
-        : locationFilter === 'us'
-          ? 'software engineer united states'
-          : 'software engineer remote';
-    setDiscoveryForm({ source: 'linkedin', query: defaultQuery });
+  const openDiscoveryModal = async () => {
     setShowDiscoveryModal(true);
-    void handleCheckBrowser();
+    setIsPlanningDiscovery(true);
+    setAutoDiscoveryPlan(null);
+    await handleCheckBrowser();
+    try {
+      const profileResult = await getProfile();
+      const profile = profileResult.error ? null : profileResult.data ?? null;
+      setAutoDiscoveryPlan(buildAutoDiscoveryPlan(locationFilter, profile));
+    } catch {
+      setAutoDiscoveryPlan(buildAutoDiscoveryPlan(locationFilter, null));
+    } finally {
+      setIsPlanningDiscovery(false);
+    }
   };
 
   const handleBrowserAssistedDiscovery = async () => {
-    const query = discoveryForm.query.trim();
+    const plan = autoDiscoveryPlan ?? buildAutoDiscoveryPlan(locationFilter, null);
+    const query = plan.query.trim();
     if (!query) {
       pushNotice('Search query is required.', 'error');
       return;
     }
 
     setIsDiscovering(true);
-    const result = await runBrowserAssistedDiscovery({
-      source: discoveryForm.source,
-      query,
-      useVisibleBrowser,
-      waitSeconds: 28,
-      maxResults: 35,
-      minMatchScore: 0.0,
-    });
+    let totalFound = 0;
+    let totalNew = 0;
+    let successCount = 0;
+    const errors: string[] = [];
+    for (const source of plan.sources) {
+      const result = await runBrowserAssistedDiscovery({
+        source,
+        query,
+        useVisibleBrowser,
+        waitSeconds: 28,
+        maxResults: 35,
+        minMatchScore: 0.0,
+      });
+      if (result.error) {
+        errors.push(`${source}: ${result.error}`);
+        continue;
+      }
+      successCount += 1;
+      totalFound += result.data.jobs_found;
+      totalNew += result.data.jobs_new;
+    }
     setIsDiscovering(false);
 
-    if (result.error) {
-      pushNotice(result.error, 'error');
+    if (successCount === 0) {
+      pushNotice(errors[0] ?? 'AI browser search failed.', 'error');
       return;
     }
 
     setShowDiscoveryModal(false);
     await fetchJobs();
     pushNotice(
-      `AI browser search complete (${result.data.source}): ${result.data.jobs_new} new jobs imported from ${result.data.jobs_found} found.`,
+      `AI auto-search complete: ${totalNew} new jobs imported from ${totalFound} found across ${successCount} source(s).`,
       'success'
     );
+    if (errors.length) {
+      pushNotice(
+        `Some sources failed: ${errors.slice(0, 2).join(' | ')}`,
+        'info'
+      );
+    }
   };
 
   const handleRefreshAfterCapture = async () => {
@@ -468,12 +518,12 @@ export function JobFeedPage() {
               Visible Browser
             </label>
             <button
-              onClick={openDiscoveryModal}
+              onClick={() => void openDiscoveryModal()}
               disabled={isDiscovering}
               className="rounded-md bg-blue-700 px-3 py-1.5 text-xs font-medium text-zinc-100 transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-70"
-              title="AI agent controls your visible browser, runs search, and imports matched jobs"
+              title="AI agent auto-selects source/query, controls your browser, and imports matched jobs"
             >
-              {isDiscovering ? 'Searching…' : 'AI Browser Search'}
+              {isDiscovering ? 'Searching…' : 'AI Auto Search'}
             </button>
             <button
               onClick={() => setShowBrowserHelperModal(true)}
@@ -599,9 +649,9 @@ export function JobFeedPage() {
           <div className="absolute inset-0 bg-black/70" onClick={() => setShowDiscoveryModal(false)} />
           <div className="relative w-full max-w-lg rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
             <div className="border-b border-zinc-800 px-5 py-4">
-              <h3 className="text-base font-semibold text-zinc-100">AI Browser Search</h3>
+              <h3 className="text-base font-semibold text-zinc-100">AI Auto Search</h3>
               <p className="mt-1 text-sm text-zinc-400">
-                Agent operates your visible browser session, runs search, and imports matched jobs.
+                Agent auto-picks source and query from your profile, then operates your visible browser.
               </p>
             </div>
 
@@ -694,41 +744,31 @@ export function JobFeedPage() {
             </div>
 
             <div className="space-y-4 px-5 py-4">
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                  Source
-                </span>
-                <select
-                  value={discoveryForm.source}
-                  onChange={(event) =>
-                    setDiscoveryForm((prev) => ({
-                      ...prev,
-                      source: event.target.value as BrowserDiscoverySource,
-                    }))
-                  }
-                  className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100"
-                >
-                  <option value="linkedin">LinkedIn</option>
-                  <option value="indeed">Indeed</option>
-                </select>
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                  Search Query
-                </span>
-                <input
-                  type="text"
-                  value={discoveryForm.query}
-                  onChange={(event) =>
-                    setDiscoveryForm((prev) => ({
-                      ...prev,
-                      query: event.target.value,
-                    }))
-                  }
-                  placeholder="software engineer canada"
-                  className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100"
-                />
-              </label>
+              {isPlanningDiscovery ? (
+                <div className="rounded-md border border-zinc-700 bg-zinc-950/70 px-3 py-2 text-xs text-zinc-400">
+                  Building AI search plan from your profile…
+                </div>
+              ) : autoDiscoveryPlan ? (
+                <div className="space-y-2 rounded-md border border-zinc-700 bg-zinc-950/70 p-3 text-sm">
+                  <p className="text-zinc-300">
+                    <span className="text-zinc-500">Role:</span> {autoDiscoveryPlan.role}
+                  </p>
+                  <p className="text-zinc-300">
+                    <span className="text-zinc-500">Location Hint:</span> {autoDiscoveryPlan.locationHint}
+                  </p>
+                  <p className="text-zinc-300">
+                    <span className="text-zinc-500">Query:</span> {autoDiscoveryPlan.query}
+                  </p>
+                  <p className="text-zinc-300">
+                    <span className="text-zinc-500">Sources:</span>{' '}
+                    {autoDiscoveryPlan.sources.join(', ')}
+                  </p>
+                </div>
+              ) : (
+                <div className="rounded-md border border-zinc-700 bg-zinc-950/70 px-3 py-2 text-xs text-zinc-400">
+                  Could not build profile-based plan, using fallback query.
+                </div>
+              )}
             </div>
             <div className="flex items-center justify-end gap-2 border-t border-zinc-800 px-5 py-4">
               <button
@@ -740,10 +780,14 @@ export function JobFeedPage() {
               </button>
               <button
                 onClick={() => void handleBrowserAssistedDiscovery()}
-                disabled={isDiscovering || !discoveryForm.query.trim()}
+                disabled={
+                  isDiscovering ||
+                  isPlanningDiscovery ||
+                  !browserStatus?.connected
+                }
                 className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
               >
-                {isDiscovering ? 'Searching…' : 'Run AI Search'}
+                {isDiscovering ? 'Searching…' : 'Run Auto Search'}
               </button>
             </div>
           </div>
