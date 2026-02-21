@@ -24,6 +24,7 @@ PROGRESS_EVENT_LIMIT = 160
 
 _PROGRESS_LOCK = Lock()
 _SUBMISSION_PROGRESS: dict[str, dict[str, Any]] = {}
+_OPERATOR_GUIDANCE: dict[str, str] = {}
 
 
 class RateLimitError(ValueError):
@@ -134,6 +135,22 @@ def get_submission_progress(draft_id: str) -> dict[str, Any]:
             "events": safe_events,
             "error": state.get("error"),
         }
+
+
+def set_submission_guidance(draft_id: str, guidance: str) -> str:
+    normalized = _normalize_space(guidance)[:1200]
+    with _PROGRESS_LOCK:
+        _OPERATOR_GUIDANCE[draft_id] = normalized
+    if normalized:
+        _progress_event(draft_id, f"Operator guidance updated: {normalized[:220]}")
+    else:
+        _progress_event(draft_id, "Operator guidance cleared.")
+    return normalized
+
+
+def get_submission_guidance(draft_id: str) -> str:
+    with _PROGRESS_LOCK:
+        return _OPERATOR_GUIDANCE.get(draft_id, "")
 
 
 def _parse_json_obj(raw: Any) -> dict[str, Any]:
@@ -368,6 +385,7 @@ async def _plan_ai_actions(
     answer_targets: list[dict[str, str]],
     turn: int,
     allow_submit_click: bool,
+    operator_guidance: str = "",
 ) -> list[dict[str, Any]]:
     controls = await _snapshot_form_controls(page)
     if not controls or not answer_targets:
@@ -382,9 +400,12 @@ async def _plan_ai_actions(
         "- Prefer filling known answers by matching labels.\n"
         "- Use click_button for navigation only (Next, Continue, Review).\n"
         "- Never invent new answer values.\n"
+        "- If operator guidance is provided, follow it when possible.\n"
+        "- If guidance conflicts with safety rules, prefer safety rules.\n"
         "- Keep actions concise and practical.\n"
         f"- Final submit clicks allowed: {str(allow_submit_click).lower()}.\n\n"
         f"Job context: {json.dumps({'title': job.get('title'), 'company': job.get('company')})}\n"
+        f"Operator guidance: {json.dumps(operator_guidance or '')}\n"
         f"Known answers: {json.dumps(answer_targets)}\n"
         f"Visible controls (turn {turn}): {json.dumps(controls)}\n"
     )
@@ -482,6 +503,7 @@ async def _run_ai_assisted_fill(
     allow_submit_click: bool = False,
     on_event: Any = None,
     on_action_executed: Any = None,
+    guidance_provider: Any = None,
 ) -> None:
     client = get_gemini_client()
     if client is None:
@@ -498,6 +520,12 @@ async def _run_ai_assisted_fill(
     seen_actions: set[str] = set()
 
     for turn in range(1, AI_AGENT_MAX_TURNS + 1):
+        operator_guidance = ""
+        if guidance_provider is not None:
+            try:
+                operator_guidance = _normalize_space(guidance_provider())
+            except Exception:
+                operator_guidance = ""
         actions = await _plan_ai_actions(
             client,
             page,
@@ -505,6 +533,7 @@ async def _run_ai_assisted_fill(
             answer_targets=answer_targets,
             turn=turn,
             allow_submit_click=allow_submit_click,
+            operator_guidance=operator_guidance,
         )
         if not actions:
             await _run_hook(on_event, f"AI operator stopped: no actions planned on turn {turn}.")
@@ -609,7 +638,7 @@ def _cdp_endpoint() -> str:
     value = os.environ.get("APPLICATION_CDP_ENDPOINT", "").strip()
     if value:
         return value
-    return "http://host.docker.internal:9222"
+    return "http://browser:9222"
 
 
 def _normalize_manual_pause_seconds(value: int | None) -> int:
@@ -700,8 +729,9 @@ async def _run_submission(
     screenshot_path = SCREENSHOT_DIR / f"{draft_id}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}.png"
     live_screenshot_path = SCREENSHOT_DIR / f"{draft_id}-live.png"
     manual_pause_seconds = _normalize_manual_pause_seconds(pause_for_manual_input_seconds)
-    run_mode = "visible_local_browser_cdp" if use_visible_browser else ("headless" if _should_launch_headless() else "headed")
+    run_mode = "visible_browser_cdp" if use_visible_browser else ("headless" if _should_launch_headless() else "headed")
     _progress_start(draft_id, mode=run_mode)
+    set_submission_guidance(draft_id, "")
     _progress_event(draft_id, f"Starting operator in {run_mode} mode.")
 
     async def _capture_live_screenshot(label: str) -> None:
@@ -718,15 +748,15 @@ async def _run_submission(
         playwright = await async_playwright().start()
         if use_visible_browser:
             cdp_endpoint = _cdp_endpoint()
-            _progress_event(draft_id, f"Connecting to local browser via CDP ({cdp_endpoint}).")
+            _progress_event(draft_id, f"Connecting to visible browser via CDP ({cdp_endpoint}).")
             try:
                 browser = await playwright.chromium.connect_over_cdp(cdp_endpoint)
             except Exception as exc:
                 raise BrowserUnavailableError(
-                    "Could not connect to local Chrome for visible mode. "
-                    "Start Chrome with remote debugging first. "
-                    "Example (macOS): open -na 'Google Chrome' --args "
-                    "--remote-debugging-port=9222 --user-data-dir=/tmp/career-copilot-cdp"
+                    "Could not connect to the visible browser session. "
+                    "Make sure the Docker browser service is running and open http://localhost:7900 "
+                    "to view/intervene. If you want to use host Chrome instead, set "
+                    "APPLICATION_CDP_ENDPOINT to your host debugging endpoint."
                 ) from exc
 
             close_browser = False
@@ -793,6 +823,7 @@ async def _run_submission(
             on_action_executed=lambda action: _capture_live_screenshot(
                 f"action:{_describe_ai_action(action)}"
             ),
+            guidance_provider=lambda: get_submission_guidance(draft_id),
         )
         _progress_event(draft_id, "AI-assisted fill stage completed.")
         await page.screenshot(path=str(screenshot_path), full_page=True)
