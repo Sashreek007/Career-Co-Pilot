@@ -119,8 +119,8 @@ export async function checkBrowserConnection(
         browser_info: {},
         error: 'Could not reach backend to check browser status.',
         how_to_start:
-          'macOS/Linux: google-chrome --remote-debugging-port=9222 --no-first-run\n' +
-          'Windows:     chrome.exe --remote-debugging-port=9222\n' +
+          'macOS/Linux: google-chrome --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --no-first-run\n' +
+          'Windows:     chrome.exe --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0\n' +
           'Docker backend endpoint: http://host.docker.internal:9222\n' +
           'Host backend endpoint:   http://localhost:9222',
       },

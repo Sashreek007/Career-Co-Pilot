@@ -8,10 +8,11 @@ from urllib.parse import quote_plus
 
 from playwright.async_api import async_playwright
 
-from ...selenium_cdp import (
+from ...browser_cdp import (
     get_chrome_executable_path,
     get_chrome_user_profile_dir,
     load_browser_storage_state,
+    normalize_cdp_endpoint,
     save_browser_storage_state,
 )
 from .base import JobSourceAdapter, RawJobData
@@ -83,7 +84,12 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
         self.use_visible_browser = (
             _discovery_visible_browser_default() if use_visible_browser is None else bool(use_visible_browser)
         )
-        self.cdp_endpoint = cdp_endpoint.strip() if isinstance(cdp_endpoint, str) and cdp_endpoint.strip() else _discovery_cdp_endpoint()
+        raw_endpoint = (
+            cdp_endpoint.strip()
+            if isinstance(cdp_endpoint, str) and cdp_endpoint.strip()
+            else _discovery_cdp_endpoint()
+        )
+        self.cdp_endpoint = normalize_cdp_endpoint(raw_endpoint)
         if manual_wait_seconds is None:
             self.manual_wait_ms = _manual_wait_ms()
         else:
@@ -146,8 +152,8 @@ class _UserAssistedBrowserAdapter(JobSourceAdapter):
                     raise RuntimeError(
                         f"Could not connect to your Chrome browser at {self.cdp_endpoint}. "
                         "Start Chrome with remote debugging enabled:\n"
-                        '  macOS/Linux: google-chrome --remote-debugging-port=9222 --no-first-run\n'
-                        '  Windows:     chrome.exe --remote-debugging-port=9222\n'
+                        '  macOS/Linux: google-chrome --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --no-first-run\n'
+                        '  Windows:     chrome.exe --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0\n'
                         "If backend runs in Docker, set DISCOVERY_BROWSER_CDP_ENDPOINT=http://host.docker.internal:9222. "
                         "If backend runs on your host directly, set DISCOVERY_BROWSER_CDP_ENDPOINT=http://localhost:9222."
                     ) from cdp_exc

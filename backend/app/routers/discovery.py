@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 
 from ..db.database import get_db
+from ..engines.browser_cdp import normalize_cdp_endpoint
 from ..engines.discovery.adapters.browser_assisted import (
     IndeedUserAssistedAdapter,
     LinkedInUserAssistedAdapter,
@@ -266,10 +267,11 @@ def get_browser_status(cdp_endpoint: str | None = None):
     Tries to connect to the CDP /json endpoint and returns connected=true if it succeeds.
     """
     import os
-    endpoint = (cdp_endpoint or "").strip() or os.environ.get(
+    configured_endpoint = (cdp_endpoint or "").strip() or os.environ.get(
         "DISCOVERY_BROWSER_CDP_ENDPOINT",
         "http://host.docker.internal:9222",
     )
+    endpoint = normalize_cdp_endpoint(configured_endpoint)
     # Normalise: strip trailing slash, ensure no path
     endpoint = endpoint.rstrip("/")
     check_url = f"{endpoint}/json/version"
@@ -293,11 +295,12 @@ def get_browser_status(cdp_endpoint: str | None = None):
     return {
         "connected": connected,
         "endpoint": endpoint,
+        "configured_endpoint": configured_endpoint,
         "browser_info": browser_info,
         "error": error,
         "how_to_start": (
-            "macOS/Linux: google-chrome --remote-debugging-port=9222 --no-first-run\n"
-            "Windows:     chrome.exe --remote-debugging-port=9222\n"
+            "macOS/Linux: google-chrome --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0 --no-first-run\n"
+            "Windows:     chrome.exe --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0\n"
             "Docker backend endpoint: http://host.docker.internal:9222\n"
             "Host backend endpoint:   http://localhost:9222"
         ),
