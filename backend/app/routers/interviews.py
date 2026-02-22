@@ -54,13 +54,19 @@ def _ensure_str_list(value: Any) -> list[str]:
 
 
 def _fallback_company_profile(company: str, role_title: str) -> dict[str, Any]:
+    clean_company = _ensure_str(company, "Unknown Company")
+    clean_role = _ensure_str(role_title, "Unknown Role")
     return {
-        "company_name": _ensure_str(company, "[REQUIRES_REVIEW: missing company name]"),
-        "role_title": _ensure_str(role_title, "[REQUIRES_REVIEW: missing role title]"),
-        "company_summary": "[REQUIRES_REVIEW: add a short summary of what the company does]",
+        "company_name": clean_company,
+        "role_title": clean_role,
+        "company_summary": f"{clean_company} appears to operate in areas relevant to the {clean_role} role.",
         "company_website": "",
         "sources_note": "Generated from available application context.",
     }
+
+
+def _is_requires_review_text(value: str) -> bool:
+    return "[REQUIRES_REVIEW" in (value or "")
 
 
 def _normalise_company_profile(raw: Any, company: str, role_title: str) -> dict[str, Any]:
@@ -69,10 +75,13 @@ def _normalise_company_profile(raw: Any, company: str, role_title: str) -> dict[
         return fallback
     legacy_company = _ensure_str(raw.get("company"), "")
     legacy_title = _ensure_str(raw.get("title"), "")
+    summary = _ensure_str(raw.get("company_summary"), fallback["company_summary"])
+    if _is_requires_review_text(summary):
+        summary = fallback["company_summary"]
     return {
         "company_name": _ensure_str(raw.get("company_name"), legacy_company or fallback["company_name"]),
         "role_title": _ensure_str(raw.get("role_title"), legacy_title or fallback["role_title"]),
-        "company_summary": _ensure_str(raw.get("company_summary"), fallback["company_summary"]),
+        "company_summary": summary,
         "company_website": _ensure_str(raw.get("company_website"), fallback["company_website"]),
         "sources_note": _ensure_str(raw.get("sources_note"), fallback["sources_note"]),
     }

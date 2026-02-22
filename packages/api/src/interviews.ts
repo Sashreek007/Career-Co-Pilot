@@ -27,27 +27,33 @@ function normalizeCompanyProfile(raw: unknown, fallbackCompany: string, fallback
   const base = (raw && typeof raw === 'object') ? (raw as Record<string, unknown>) : {};
   const legacyCompany = ensureStr(base.company, '');
   const legacyTitle = ensureStr(base.title, '');
+  const companyName = ensureStr(base.company_name, legacyCompany || fallbackCompany || 'the company');
+  const roleTitle = ensureStr(base.role_title, legacyTitle || fallbackRole || 'the role');
   const companySummary = ensureStr(base.company_summary, '');
 
-  const products = ensureList(base.products).length > 0 ? ensureList(base.products) : ['[REQUIRES_REVIEW: missing product lines]'];
-  const cultureSignals = ensureList(base.culture_signals).length > 0 ? ensureList(base.culture_signals) : ['[REQUIRES_REVIEW: missing culture signals]'];
-  const vision = ensureStr(base.vision, '[REQUIRES_REVIEW: missing company vision]');
-  const derivedSummary = companySummary || (
-    `Based on available context, ${ensureStr(base.company_name, legacyCompany || fallbackCompany || 'the company')} appears to focus on ` +
-    `${products.filter((p) => !p.includes('[REQUIRES_REVIEW')).join(', ') || '[REQUIRES_REVIEW: missing company focus]'} ` +
-    `with culture signals around ${cultureSignals.filter((c) => !c.includes('[REQUIRES_REVIEW')).join(', ') || '[REQUIRES_REVIEW: missing culture signals]'}.`
+  const cleanedProducts = ensureList(base.products).filter((p) => !p.includes('[REQUIRES_REVIEW'));
+  const cleanedCulture = ensureList(base.culture_signals).filter((p) => !p.includes('[REQUIRES_REVIEW'));
+  const cleanedNews = ensureList(base.recent_news).filter((p) => !p.includes('[REQUIRES_REVIEW'));
+  const cleanedFocus = ensureList(base.interview_focus).filter((p) => !p.includes('[REQUIRES_REVIEW'));
+
+  const products = cleanedProducts.length > 0 ? cleanedProducts : ['Core platform capabilities tied to the role'];
+  const cultureSignals = cleanedCulture.length > 0 ? cleanedCulture : ['Ownership and collaboration'];
+  const vision = ensureStr(base.vision, 'Public material emphasizes product quality and customer impact.');
+  const derivedSummary = (companySummary && !companySummary.includes('[REQUIRES_REVIEW')) ? companySummary : (
+    `Based on available context, ${companyName} appears relevant to ${roleTitle}, with focus on ` +
+    `${products.join(', ')} and culture signals around ${cultureSignals.join(', ')}.`
   );
 
   return {
-    company_name: ensureStr(base.company_name, legacyCompany || fallbackCompany || '[REQUIRES_REVIEW: missing company name]'),
-    role_title: ensureStr(base.role_title, legacyTitle || fallbackRole || '[REQUIRES_REVIEW: missing role title]'),
+    company_name: companyName,
+    role_title: roleTitle,
     company_summary: derivedSummary,
     company_website: ensureStr(base.company_website, ''),
     vision,
     products,
     culture_signals: cultureSignals,
-    recent_news: ensureList(base.recent_news).length > 0 ? ensureList(base.recent_news) : ['[REQUIRES_REVIEW: missing recent company updates]'],
-    interview_focus: ensureList(base.interview_focus).length > 0 ? ensureList(base.interview_focus) : ['[REQUIRES_REVIEW: infer from role + JD]'],
+    recent_news: cleanedNews.length > 0 ? cleanedNews : ['Check latest updates from the company newsroom.'],
+    interview_focus: cleanedFocus.length > 0 ? cleanedFocus : ['Role responsibilities and execution tradeoffs.'],
     sources_note: ensureStr(base.sources_note, 'Generated from available application context.'),
   };
 }
