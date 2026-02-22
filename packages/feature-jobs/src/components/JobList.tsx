@@ -4,10 +4,18 @@ import { JobCard } from './JobCard';
 interface JobListProps {
   jobs: Job[];
   selectedJobId: string | null;
+  selectedIds: string[];
   onSelect: (id: string) => void;
+  onToggleSelected: (id: string, checked: boolean) => void;
 }
 
-export function JobList({ jobs, selectedJobId, onSelect }: JobListProps) {
+export function JobList({
+  jobs,
+  selectedJobId,
+  selectedIds,
+  onSelect,
+  onToggleSelected,
+}: JobListProps) {
   if (jobs.length === 0) {
     return (
       <div className="flex items-center justify-center h-40 text-sm text-zinc-500">
@@ -23,7 +31,9 @@ export function JobList({ jobs, selectedJobId, onSelect }: JobListProps) {
           key={job.id}
           job={job}
           isSelected={job.id === selectedJobId}
+          isChecked={selectedIds.includes(job.id)}
           onClick={() => onSelect(job.id)}
+          onToggleChecked={(checked) => onToggleSelected(job.id, checked)}
         />
       ))}
     </div>

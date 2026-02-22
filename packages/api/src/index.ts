@@ -1,7 +1,7 @@
 export type { ApiResponse } from './types';
 export { delay, MOCK_DELAY_MS } from './types';
 
-export { getJobs, getJob, markJobInterested, importExternalJob } from './jobs';
+export { getJobs, getJob, markJobInterested, archiveJob, archiveAllJobs, importExternalJob } from './jobs';
 export { getResumeVersions, getResumeVersion, exportResumeAsLatex, exportResumeAsPdf, generateAllVersions, updateResumeContent } from './resumes';
 export type { ResumePdfExportResult, GenerateAllResult, GeneratedVersionSummary } from './resumes';
 export { getApplicationDrafts, getApplicationDraft, updateDraftStatus } from './applications';
@@ -53,12 +53,19 @@ export {
   createProfile,
   activateProfile,
   renameProfile,
+  deleteProfile,
   getProfile,
   updateProfile,
   uploadProfileResume,
   recommendProfileRoles,
 } from './profile';
-export type { ProfileSummary, ResumeUploadResult, ResumeUploadExtraction, RoleRecommendationResult } from './profile';
+export type {
+  ProfileSummary,
+  ResumeUploadResult,
+  ResumeUploadExtraction,
+  RoleRecommendationResult,
+  DeleteProfileResult,
+} from './profile';
 export { getInsights, refreshInsights } from './insights';
 export { getSettings, updateSettings } from './settings';
 export type { AppSettings } from './settings';

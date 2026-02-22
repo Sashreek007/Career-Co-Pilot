@@ -22,6 +22,7 @@ JSON_COLUMNS = {
     "experience_json",
     "projects_json",
     "certifications_json",
+    "education_json",
     "role_interests_json",
     "resume_parsed_json",
 }
@@ -39,6 +40,7 @@ PROFILE_COLUMNS = {
     "experience_json",
     "projects_json",
     "certifications_json",
+    "education_json",
     "role_interests_json",
     "resume_file_name",
     "resume_file_path",
@@ -269,6 +271,7 @@ def create_profile(payload: dict[str, Any] | None = None, db: sqlite3.Connection
         "experience_json": json.dumps([]),
         "projects_json": json.dumps([]),
         "certifications_json": json.dumps([]),
+        "education_json": json.dumps([]),
         "role_interests_json": json.dumps([]),
         "updated_at": now,
     }
@@ -305,6 +308,35 @@ def rename_profile(profile_id: str, payload: dict[str, Any], db: sqlite3.Connect
     if row is None:
         raise HTTPException(status_code=404, detail="Profile not found")
     return _row_to_profile(row)
+
+
+@router.delete("/profiles/{profile_id}")
+def delete_profile(profile_id: str, db: sqlite3.Connection = Depends(db_conn)):
+    target = _validate_profile_id(profile_id)
+    if not _profile_exists(target, db):
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    remaining = db.execute(
+        "SELECT id FROM user_profile WHERE id != ? ORDER BY datetime(updated_at) DESC, id ASC",
+        (target,),
+    ).fetchall()
+    if not remaining:
+        raise HTTPException(status_code=400, detail="Cannot delete the last profile")
+
+    active_id = _get_active_profile_id(db)
+    next_active_id = str(remaining[0][0])
+
+    db.execute("DELETE FROM user_profile WHERE id = ?", (target,))
+    db.commit()
+
+    if active_id == target:
+        _set_active_profile_id(db, next_active_id)
+
+    return {
+        "ok": True,
+        "deleted_profile_id": target,
+        "active_profile_id": _get_active_profile_id(db),
+    }
 
 
 @router.get("/profile")

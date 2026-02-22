@@ -217,6 +217,53 @@ export async function markJobInterested(id: string): Promise<ApiResponse<void>> 
   return { data: undefined, status: 200 };
 }
 
+export async function archiveJob(id: string): Promise<ApiResponse<void>> {
+  const response = await fetch(`/api/jobs/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+  if (!response.ok) {
+    let payload: unknown = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
+    return {
+      data: undefined,
+      error: toErrorMessage(payload, 'Failed to remove job'),
+      status: response.status,
+    };
+  }
+  return { data: undefined, status: response.status };
+}
+
+export async function archiveAllJobs(): Promise<ApiResponse<{ archived: number }>> {
+  const response = await fetch('/api/jobs', {
+    method: 'DELETE',
+  });
+  let payload: unknown = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+  if (!response.ok) {
+    return {
+      data: { archived: 0 },
+      error: toErrorMessage(payload, 'Failed to clear jobs'),
+      status: response.status,
+    };
+  }
+  const archived =
+    payload && typeof payload === 'object' && 'archived' in payload
+      ? Number((payload as { archived?: unknown }).archived ?? 0)
+      : 0;
+  return {
+    data: { archived: Number.isFinite(archived) ? Math.max(0, archived) : 0 },
+    status: response.status,
+  };
+}
+
 export async function importExternalJob(input: ImportJobInput): Promise<ApiResponse<Job | null>> {
   const response = await fetch('/api/jobs/import-link', {
     method: 'POST',

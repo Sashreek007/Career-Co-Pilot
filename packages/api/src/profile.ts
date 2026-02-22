@@ -1,5 +1,6 @@
 import type {
   Certification,
+  Education,
   Experience,
   Project,
   RoleInterest,
@@ -23,6 +24,7 @@ type BackendProfile = {
   experience_json?: unknown;
   projects_json?: unknown;
   certifications_json?: unknown;
+  education_json?: unknown;
   role_interests_json?: unknown;
   updated_at?: string;
   resume_file_name?: string | null;
@@ -50,6 +52,7 @@ export interface ResumeUploadExtraction {
   skills_extracted: number;
   experiences_extracted: number;
   projects_extracted: number;
+  education_extracted?: number;
   certifications_extracted: number;
   role_interests_extracted?: number;
   used_ai: boolean;
@@ -66,6 +69,11 @@ export interface RoleRecommendationResult {
   profile: UserProfile;
   recommendedCount: number;
   usedAi: boolean;
+}
+
+export interface DeleteProfileResult {
+  deletedProfileId: string;
+  activeProfileId: string;
 }
 
 function toErrorMessage(payload: unknown, fallback: string): string {
@@ -198,6 +206,39 @@ function normalizeCertification(value: unknown, index: number): Certification {
   };
 }
 
+function normalizeEducation(value: unknown, index: number): Education {
+  if (value && typeof value === 'object') {
+    const item = value as Record<string, unknown>;
+    const endRaw = String(item.endDate ?? item.end_date ?? item.end ?? '');
+    const current =
+      Boolean(item.current) ||
+      endRaw.toLowerCase() === 'present' ||
+      endRaw.toLowerCase() === 'current';
+    return {
+      id: String(item.id ?? `edu-${index}`),
+      institution: String(item.institution ?? item.school ?? item.university ?? item.college ?? ''),
+      degree: String(item.degree ?? item.qualification ?? item.credential ?? ''),
+      field: String(item.field ?? item.field_of_study ?? item.major ?? '').trim() || undefined,
+      startDate: String(item.startDate ?? item.start_date ?? item.start ?? '').trim() || undefined,
+      endDate: current ? undefined : endRaw.trim() || undefined,
+      current,
+      gpa: String(item.gpa ?? '').trim() || undefined,
+      location: String(item.location ?? '').trim() || undefined,
+    };
+  }
+  return {
+    id: `edu-${index}`,
+    institution: '',
+    degree: '',
+    field: undefined,
+    startDate: undefined,
+    endDate: undefined,
+    current: false,
+    gpa: undefined,
+    location: undefined,
+  };
+}
+
 function normalizeRoleInterest(value: unknown, index: number): RoleInterest {
   if (value && typeof value === 'object') {
     const item = value as Record<string, unknown>;
@@ -239,6 +280,9 @@ function fromBackend(payload: BackendProfile): UserProfile {
     projects: asArray(payload.projects_json)
       .map(normalizeProject)
       .filter((item) => Boolean(item.name)),
+    education: asArray(payload.education_json)
+      .map(normalizeEducation)
+      .filter((item) => Boolean(item.institution || item.degree)),
     certifications: asArray(payload.certifications_json)
       .map(normalizeCertification)
       .filter((item) => Boolean(item.name)),
@@ -264,6 +308,7 @@ function toBackend(payload: Partial<UserProfile>): Record<string, unknown> {
   if (payload.skills !== undefined) body.skills_json = payload.skills;
   if (payload.experiences !== undefined) body.experience_json = payload.experiences;
   if (payload.projects !== undefined) body.projects_json = payload.projects;
+  if (payload.education !== undefined) body.education_json = payload.education;
   if (payload.certifications !== undefined) body.certifications_json = payload.certifications;
   if (payload.roleInterests !== undefined) body.role_interests_json = payload.roleInterests;
   return body;
@@ -357,6 +402,27 @@ export async function renameProfile(profileId: string, name: string): Promise<Ap
     throw new Error(toErrorMessage(payload, `Failed to rename profile (${response.status})`));
   }
   return { data: fromBackend(payload as BackendProfile), status: response.status };
+}
+
+export async function deleteProfile(profileId: string): Promise<ApiResponse<DeleteProfileResult>> {
+  const response = await fetch(`/api/profiles/${encodeURIComponent(profileId)}`, {
+    method: 'DELETE',
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(toErrorMessage(payload, `Failed to delete profile (${response.status})`));
+  }
+  const typedPayload = payload as {
+    deleted_profile_id?: unknown;
+    active_profile_id?: unknown;
+  };
+  return {
+    data: {
+      deletedProfileId: String(typedPayload.deleted_profile_id ?? profileId),
+      activeProfileId: String(typedPayload.active_profile_id ?? ''),
+    },
+    status: response.status,
+  };
 }
 
 export async function getProfile(profileId?: string): Promise<ApiResponse<UserProfile>> {

@@ -409,6 +409,15 @@ def get_job(job_id: str, db: sqlite3.Connection = Depends(db_conn)):
     return _row_to_job(row, profile_skill_forms, full_profile)
 
 
+@router.delete("/jobs")
+def archive_all_jobs(db: sqlite3.Connection = Depends(db_conn)):
+    result = db.execute(
+        "UPDATE jobs SET is_archived = 1 WHERE is_archived = 0",
+    )
+    db.commit()
+    return {"ok": True, "archived": int(result.rowcount or 0)}
+
+
 @router.post("/jobs/import-link")
 def import_job_from_link(payload: ImportJobRequest, db: sqlite3.Connection = Depends(db_conn)):
     profile_skill_forms = _extract_profile_skill_forms(db)
