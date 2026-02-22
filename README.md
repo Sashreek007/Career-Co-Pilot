@@ -486,4 +486,4 @@ We are a team of 5 engineers from **Hacked 2026**, each owning distinct vertical
 
 ## 📄 License
 
-This project was created for the **Hacked 2026 Hackathon**. All rights reserved by Team Career Savers.
+This project is licensed under the Career Co-Pilot Protective Open Source License (CC-POL v1.0). See [LICENSE](LICENSE).
