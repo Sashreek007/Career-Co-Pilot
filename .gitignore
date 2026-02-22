@@ -13,3 +13,6 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
+.gitignore
+repo_scanner.py
+repo_dump.docx

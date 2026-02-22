@@ -261,6 +261,65 @@ def generate_draft_answers(
             answers[label] = _clean_text(user_profile.get("location")) or fallback_location or "[REQUIRES_REVIEW: Location]"
             continue
 
+        if "school" in label_lower or "university" in label_lower or "college" in label_lower or "institution" in label_lower:
+            # Try to pull from most recent experience or resume parsed data
+            edu = _parse_json_obj(user_profile.get("resume_parsed_json")).get("education")
+            school_name = None
+            if isinstance(edu, list) and edu:
+                school_name = _clean_text(edu[0].get("institution") or edu[0].get("school"))
+            elif isinstance(edu, dict):
+                school_name = _clean_text(edu.get("institution") or edu.get("school"))
+            answers[label] = school_name if school_name else f"[REQUIRES_REVIEW: {label}]"
+            continue
+
+        if "graduation" in label_lower or ("grad" in label_lower and "year" in label_lower):
+            edu = _parse_json_obj(user_profile.get("resume_parsed_json")).get("education")
+            grad_year = None
+            if isinstance(edu, list) and edu:
+                grad_year = _clean_text(edu[0].get("graduation_year") or edu[0].get("end_date") or edu[0].get("endDate"))
+            elif isinstance(edu, dict):
+                grad_year = _clean_text(edu.get("graduation_year") or edu.get("end_date") or edu.get("endDate"))
+            answers[label] = grad_year if grad_year else f"[REQUIRES_REVIEW: {label}]"
+            continue
+
+        if "degree" in label_lower or "major" in label_lower or "field of study" in label_lower:
+            edu = _parse_json_obj(user_profile.get("resume_parsed_json")).get("education")
+            degree = None
+            if isinstance(edu, list) and edu:
+                degree = _clean_text(edu[0].get("degree") or edu[0].get("major") or edu[0].get("field"))
+            elif isinstance(edu, dict):
+                degree = _clean_text(edu.get("degree") or edu.get("major") or edu.get("field"))
+            answers[label] = degree if degree else f"[REQUIRES_REVIEW: {label}]"
+            continue
+
+        if "gpa" in label_lower:
+            edu = _parse_json_obj(user_profile.get("resume_parsed_json")).get("education")
+            gpa = None
+            if isinstance(edu, list) and edu:
+                gpa = _clean_text(edu[0].get("gpa"))
+            answers[label] = gpa if gpa else f"[REQUIRES_REVIEW: {label}]"
+            continue
+
+        if "website" in label_lower or "portfolio" in label_lower or "personal url" in label_lower:
+            answers[label] = _clean_text(user_profile.get("portfolio_url")) or f"[REQUIRES_REVIEW: {label}]"
+            continue
+
+        if "salary" in label_lower or "compensation" in label_lower or "expected" in label_lower:
+            answers[label] = f"[REQUIRES_REVIEW: {label}]"
+            continue
+
+        if "how did you hear" in label_lower or "referral" in label_lower or "source" in label_lower:
+            answers[label] = "Online job board"
+            continue
+
+        if "authorized" in label_lower or "work authorization" in label_lower or "eligible to work" in label_lower:
+            answers[label] = "Yes"
+            continue
+
+        if "sponsorship" in label_lower or "visa" in label_lower:
+            answers[label] = "No"
+            continue
+
         if _is_experience_years_prompt(label_lower):
             skill_years: int | None = None
             for skill in skills:

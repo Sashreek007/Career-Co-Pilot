@@ -332,3 +332,21 @@ def post_draft_message(
     applied = post_user_chat_message(draft_id, text)
     messages = get_chat_messages(draft_id)
     return {"ok": True, "draft_id": draft_id, "applied": applied, "messages": messages}
+
+
+from fastapi.responses import FileResponse
+import os as _os
+
+_SCREENSHOT_DIR = Path(__file__).resolve().parents[2] / "data" / "screenshots"
+
+
+@router.get("/artifacts/screenshots/{filename}")
+def serve_screenshot(filename: str):
+    """Serve a screenshot file by filename."""
+    # Sanitize — no path traversal
+    safe_name = _os.path.basename(filename)
+    path = _SCREENSHOT_DIR / safe_name
+    if not path.exists():
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Screenshot not found")
+    return FileResponse(str(path), media_type="image/png")

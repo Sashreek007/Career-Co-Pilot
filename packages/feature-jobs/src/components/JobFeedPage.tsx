@@ -791,18 +791,118 @@ export function JobFeedPage() {
             )
           }
           right={
-            selectedJob ? (
-              <JobDetail
-                job={selectedJob}
-                onPrepareResume={handlePrepareResume}
-                onPrepareApplication={handlePrepareApplication}
-                onMarkInterested={markInterested}
-              />
-            ) : (
-              <div className="flex items-center justify-center h-full text-sm text-zinc-500">
-                Select a job to view details
-              </div>
-            )
+            <div className="h-full flex flex-col overflow-hidden">
+              {isRunningFill && runningDraftId ? (
+                <div className="space-y-3 p-4">
+                  <div className="flex items-center gap-2">
+                    <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-blue-500" />
+                    <span className="text-sm font-medium text-zinc-100">AI is filling the form…</span>
+                    <span className="ml-auto truncate text-xs text-zinc-500">{runningJobUrl}</span>
+                  </div>
+                  {(runningProgress as any)?.latestscreenshotpath ? (
+                    <img
+                      src={`/api/drafts/${runningDraftId}/screenshot`}
+                      className="w-full rounded-lg border border-zinc-800 object-contain max-h-64"
+                      alt="live browser"
+                    />
+                  ) : null}
+                  <div className="max-h-48 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950 p-3 space-y-1">
+                    {(runningProgress?.events ?? []).length > 0 ? (
+                      (runningProgress?.events ?? []).slice(-30).map((event, idx) => (
+                        <div key={idx} className="text-xs text-zinc-300">
+                          {event.message}
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-xs text-zinc-500 py-2">Waiting for agent...</p>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && chatInput.trim() && runningDraftId) {
+                          void postChatMessage(runningDraftId, chatInput.trim());
+                          setChatInput('');
+                        }
+                      }}
+                      placeholder="Send guidance to agent…"
+                      className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+              ) : assistedReview ? (
+                <div className="space-y-3 p-4">
+                  <div>
+                    <h3 className="text-sm font-medium text-zinc-100">Review before submitting</h3>
+                    <p className="text-xs text-zinc-500">{assistedReview.mode}</p>
+                  </div>
+                  {assistedReview.screenshotUrl ? (
+                    <img
+                      src={assistedReview.screenshotUrl}
+                      className="w-full rounded-lg border border-zinc-800 object-contain max-h-72"
+                      alt="form screenshot"
+                    />
+                  ) : null}
+                  <div className="max-h-40 overflow-y-auto space-y-2">
+                    {chatMessages.map((msg, idx) =>
+                      msg.role === 'ai' ? (
+                        <div key={idx} className="text-xs text-zinc-300 bg-zinc-800 rounded-lg px-3 py-2">
+                          {msg.text}
+                        </div>
+                      ) : (
+                        <div key={idx} className="text-xs text-zinc-400 text-right">
+                          {msg.text}
+                        </div>
+                      )
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && chatInput.trim() && assistedReview.draftId) {
+                          void postChatMessage(assistedReview.draftId, chatInput.trim());
+                          setChatInput('');
+                        }
+                      }}
+                      placeholder="Send guidance to agent…"
+                      className="flex-1 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div className="flex gap-2 pt-2">
+                    <button
+                      onClick={handleFinalSubmit}
+                      disabled={isSubmittingFinal}
+                      className="flex-1 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+                    >
+                      {isSubmittingFinal ? 'Submitting…' : 'Final Submit'}
+                    </button>
+                    <button
+                      onClick={handleReviewLater}
+                      className="rounded-md bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-300 hover:bg-zinc-700"
+                    >
+                      Later
+                    </button>
+                  </div>
+                </div>
+              ) : selectedJob ? (
+                <JobDetail
+                  job={selectedJob}
+                  onPrepareResume={handlePrepareResume}
+                  onPrepareApplication={handlePrepareApplication}
+                  onMarkInterested={markInterested}
+                />
+              ) : (
+                <div className="flex items-center justify-center h-full text-sm text-zinc-500">
+                  Select a job to view details
+                </div>
+              )}
+            </div>
           }
         />
       </div>

@@ -26,6 +26,13 @@ def _normalize_type(raw_type: str) -> str:
 
 async def analyze_form(job_url: str) -> list[dict[str, Any]]:
     """Read-only form scan. Never fills or submits."""
+    # LinkedIn job listing pages have no application form.
+    # The real form URL is only reachable after clicking Apply.
+    # Return empty list — _run_submission will re-scan after clicking Apply.
+    if job_url and "linkedin.com/jobs" in job_url:
+        logger.info("Skipping form scan for LinkedIn listing URL: %s", job_url)
+        return []
+
     if not job_url:
         return []
 

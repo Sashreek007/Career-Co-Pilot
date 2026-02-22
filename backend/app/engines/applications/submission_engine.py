@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import json
 import logging
 import os
@@ -24,8 +24,8 @@ from ..browser_cdp import (
 logger = logging.getLogger(__name__)
 
 SCREENSHOT_DIR = Path(__file__).resolve().parents[3] / "data" / "screenshots"
-AI_AGENT_MAX_TURNS = 3
-AI_AGENT_MAX_ACTIONS_PER_TURN = 6
+AI_AGENT_MAX_TURNS = 6
+AI_AGENT_MAX_ACTIONS_PER_TURN = 8
 AI_AGENT_MAX_CONTROLS = 120
 PROGRESS_EVENT_LIMIT = 160
 
@@ -536,7 +536,30 @@ async def _execute_ai_action(page, action: dict[str, Any], *, allow_submit_click
         await locator.scroll_into_view_if_needed()
 
         if action_type == "fill":
-            await locator.fill(str(action.get("value") or ""))
+            str_value = str(action.get("value") or "")
+            try:
+                await locator.fill(str_value)
+            except Exception:
+                pass
+            try:
+                await locator.evaluate(
+                    """(el, val) => {
+                        const proto = el.tagName === 'TEXTAREA'
+                            ? window.HTMLTextAreaElement.prototype
+                            : window.HTMLInputElement.prototype;
+                        const setter = Object.getOwnPropertyDescriptor(proto, 'value');
+                        if (setter && setter.set) {
+                            setter.set.call(el, val);
+                        } else {
+                            el.value = val;
+                        }
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                    }""",
+                    str_value,
+                )
+            except Exception:
+                pass
             return True
         if action_type == "select":
             value = str(action.get("value") or "").strip()
@@ -714,47 +737,243 @@ def _normalize_manual_pause_seconds(value: int | None) -> int:
     return max(0, min(seconds, 300))
 
 
+async def _handle_linkedin_apply(page, context, progress_fn, capture_fn):
+    try:
+        await page.wait_for_load_state("networkidle", timeout=8000)
+    except Exception:
+        pass
+    await page.wait_for_timeout(1500)
+    await capture_fn("linkedin-loaded")
+    progress_fn("Extracting external apply URL from LinkedIn page...")
+
+    # ── Strategy 1: JSON-LD structured data ──
+    external_url = None
+    try:
+        external_url = await page.evaluate("""
+            () => {
+                const scripts = document.querySelectorAll(
+                    'script[type="application/ld+json"]'
+                );
+                for (const s of scripts) {
+                    try {
+                        const d = JSON.parse(s.textContent);
+                        if (d.url && !d.url.includes('linkedin.com')) return d.url;
+                        if (d.applicationContact) return d.applicationContact;
+                        if (d.apply && d.apply.url) return d.apply.url;
+                    } catch(e) {}
+                }
+                return null;
+            }
+        """)
+    except Exception:
+        pass
+
+    # ── Strategy 2: Any <a> tag whose href points off LinkedIn ──
+    if not external_url:
+        try:
+            external_url = await page.evaluate("""
+                () => {
+                    const candidates = [
+                        ...document.querySelectorAll('a[href]')
+                    ];
+                    for (const a of candidates) {
+                        const href = a.href || '';
+                        const text = (a.textContent || '').toLowerCase();
+                        if (
+                            !href.includes('linkedin.com') &&
+                            href.startsWith('http') &&
+                            (text.includes('apply') || href.includes('apply') ||
+                             href.includes('greenhouse') || href.includes('lever') ||
+                             href.includes('workday') || href.includes('taleo') ||
+                             href.includes('ashbyhq') || href.includes('jobvite') ||
+                             href.includes('icims') || href.includes('smartrecruiters'))
+                        ) {
+                            return href;
+                        }
+                    }
+                    return null;
+                }
+            """)
+        except Exception:
+            pass
+
+    # ── Strategy 3: Check code-fenced URL in page HTML ──
+    if not external_url:
+        try:
+            external_url = await page.evaluate("""
+                () => {
+                    const html = document.documentElement.innerHTML;
+                    const patterns = [
+                        /\\"applyUrl\\":\\"([^\\"]+)\\"/,
+                        /\\"externalApplyUrl\\":\\"([^\\"]+)\\"/,
+                        /\\"apply_url\\":\\"([^\\"]+)\\"/,
+                        /data-apply-url=\\"([^\\"]+)\\"/
+                    ];
+                    for (const re of patterns) {
+                        const m = html.match(re);
+                        if (m && m[1] && !m[1].includes('linkedin.com')) {
+                            return m[1].replace(/\\\\u0026/g, '&')
+                                       .replace(/\\u0026/g, '&');
+                        }
+                    }
+                    return null;
+                }
+            """)
+        except Exception:
+            pass
+
+    # ── Navigate directly if we found the URL ──
+    if external_url:
+        progress_fn(f"Found external apply URL: {external_url}")
+        progress_fn("Navigating directly to application page...")
+        try:
+            await page.goto(external_url, wait_until="domcontentloaded", timeout=30000)
+            await page.wait_for_timeout(2000)
+            await capture_fn("external-site-loaded")
+            progress_fn(f"Now on application page: {page.url}")
+            return page, page.url
+        except Exception as e:
+            progress_fn(f"Navigation failed: {e} — will try clicking instead.")
+
+    # ── Fallback: click the apply button ──
+    progress_fn("No direct URL found — trying button click...")
+    apply_btn = None
+    try:
+        all_buttons = await page.query_selector_all("button")
+        for btn in all_buttons:
+            try:
+                text = (await btn.inner_text()).strip().lower()
+                if await btn.is_visible() and "apply" in text and "save" not in text:
+                    apply_btn = btn
+                    progress_fn(f"Clicking button: '{text.strip()}'")
+                    break
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    if apply_btn is None:
+        progress_fn("Could not find any Apply button or external URL.")
+        return page, page.url
+
+    try:
+        async with context.expect_page(timeout=6000) as new_page_info:
+            await apply_btn.scroll_into_view_if_needed()
+            await apply_btn.click()
+        new_tab = await new_page_info.value
+        await asyncio.wait_for(
+            new_tab.wait_for_load_state("domcontentloaded"), timeout=20
+        )
+        await new_tab.wait_for_timeout(1500)
+        await capture_fn("external-site-loaded")
+        progress_fn(f"New tab opened: {new_tab.url}")
+        return new_tab, new_tab.url
+    except Exception:
+        await page.wait_for_timeout(2000)
+        await capture_fn("after-click")
+        progress_fn(f"Continuing on: {page.url}")
+        return page, page.url
+
+
 async def _fill_known_fields(
     page, form_fields: list[dict[str, Any]], answers: dict[str, Any]
 ) -> None:
+    filled_answers = answers
     for field in form_fields:
         label = str(field.get("label") or "").strip()
         if not label:
             continue
-
-        value = answers.get(label)
+        value = filled_answers.get(label)
         if value is None:
             continue
         if isinstance(value, str) and value.startswith("[REQUIRES_REVIEW:"):
-            if bool(field.get("required", False)):
-                raise ValueError(f"Draft still has unresolved review placeholders ({label})")
+            logger.warning("Skipping unresolved placeholder for field: %s", label)
             continue
-
         field_type = str(field.get("type") or "").lower()
-        await asyncio.sleep(random.uniform(0.3, 1.2))
+        await asyncio.sleep(random.uniform(0.3, 0.9))
+        clean_label = re.sub(r'\s*\*+\s*$', '', label).strip()
+        name_key = re.sub(r'[^a-z0-9]', '', clean_label.lower())
+
+        async def _find_loc(cl=clean_label, orig=label, nk=name_key):
+            for loc in [
+                page.get_by_label(cl, exact=False).first,
+                page.get_by_label(orig, exact=False).first,
+                page.locator(f'[aria-label*="{cl}"]').first,
+                page.get_by_placeholder(cl, exact=False).first,
+                page.locator(f'input[name*="{nk}"]').first,
+                page.locator(f'textarea[name*="{nk}"]').first,
+            ]:
+                try:
+                    if await loc.count() > 0:
+                        return loc
+                except Exception:
+                    pass
+            return None
+
+        # NOTE: In _fill_known_fields the page variable refers to the
+        # parameter 'page' passed to the function, not active_page.
+        # The caller (in _run_submission) passes active_page as 'page'.
 
         try:
-            locator = page.get_by_label(label, exact=False).first
-            if await locator.count() == 0:
+            locator = await _find_loc()
+            if locator is None:
                 logger.warning("Skipping unfillable field label=%s", label)
                 continue
             await locator.scroll_into_view_if_needed()
+
             if field_type == "dropdown":
-                await locator.select_option(label=str(value))
+                try:
+                    await locator.select_option(label=str(value))
+                except Exception:
+                    try:
+                        await locator.select_option(value=str(value))
+                    except Exception:
+                        logger.warning("Could not select option for %s", label)
+
             elif field_type == "checkbox":
                 if bool(value):
                     await locator.check()
                 else:
                     await locator.uncheck()
+
             elif field_type == "file":
                 if isinstance(value, dict):
-                    file_path = value.get("resume_file_path")
-                    if file_path and Path(file_path).exists():
-                        await locator.set_input_files(file_path)
+                    filepath = value.get("resume_file_path")
+                    if filepath and Path(filepath).exists():
+                        await locator.set_input_files(filepath)
+                else:
+                    logger.warning("Unexpected file value for field: %s", label)
+
             else:
-                await locator.fill(str(value))
+                str_value = str(value)
+                # Phase 1: standard Playwright fill
+                try:
+                    await locator.fill(str_value)
+                except Exception:
+                    pass
+                # Phase 2: React-compatible native value setter + synthetic events
+                try:
+                    await locator.evaluate(
+                        """(el, val) => {
+                            const proto = el.tagName === 'TEXTAREA'
+                                ? window.HTMLTextAreaElement.prototype
+                                : window.HTMLInputElement.prototype;
+                            const setter = Object.getOwnPropertyDescriptor(proto, 'value');
+                            if (setter && setter.set) {
+                                setter.set.call(el, val);
+                            } else {
+                                el.value = val;
+                            }
+                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                        }""",
+                        str_value,
+                    )
+                except Exception:
+                    pass
+
         except Exception:
-            logger.warning("Skipping unfillable field label=%s", label)
+            logger.warning("Error filling field label=%s", label, exc_info=True)
 
 
 def _site_key_from_url(url: str) -> str:
@@ -884,7 +1103,7 @@ async def _run_submission(
             executable = get_chrome_executable_path()
             try:
                 if user_data_dir:
-                    # Launch with user's real Chrome profile — inherits all saved logins/sessions
+                    # Launch with user's real Chrome profile â€” inherits all saved logins/sessions
                     _progress_event(draft_id, f"Launching Chrome with user profile from {user_data_dir}.")
                     launch_kwargs: dict[str, Any] = {
                         "headless": _should_launch_headless(),
@@ -900,7 +1119,7 @@ async def _run_submission(
                     close_browser = False
                     close_context = True
                 else:
-                    # No Chrome profile found — use cookie injection fallback
+                    # No Chrome profile found â€” use cookie injection fallback
                     _progress_event(draft_id, "No Chrome profile found; using managed Chromium with saved cookies.")
                     browser = await playwright.chromium.launch(headless=_should_launch_headless())
                     context = await browser.new_context()
@@ -930,6 +1149,33 @@ async def _run_submission(
         )
         await _capture_live_screenshot("page-loaded")
 
+        # â”€â”€ LinkedIn: click Apply and follow to the actual form â”€â”€
+        active_page = page
+        if "linkedin.com" in job_url:
+            _progress_event(draft_id, "LinkedIn job detected â€” looking for Apply button.")
+            active_page, form_url = await _handle_linkedin_apply(
+                page,
+                context,
+                lambda msg: _progress_event(draft_id, msg),
+                _capture_live_screenshot,
+            )
+            if form_url != job_url:
+                _progress_event(draft_id, f"Re-scanning form on: {form_url}")
+                from .form_analyzer import analyze_form as _af
+                from .draft_generator import generate_draft_answers as _gda
+                rescanned = await _af(form_url)
+                if rescanned:
+                    form_fields = rescanned
+                    profile_row = db_conn.execute(
+                        "SELECT * FROM user_profile WHERE id = 'local'"
+                    ).fetchone()
+                    if profile_row is not None:
+                        filled_answers = _gda(job, dict(profile_row), form_fields)
+                        _progress_event(
+                            draft_id,
+                            f"Re-generated draft answers for {len(form_fields)} detected fields.",
+                        )
+
         if use_visible_browser and manual_pause_seconds > 0:
             _progress_event(
                 draft_id,
@@ -938,17 +1184,35 @@ async def _run_submission(
                     "(you can type in the browser now)."
                 ),
             )
-            await page.wait_for_timeout(manual_pause_seconds * 1000)
+            await active_page.wait_for_timeout(manual_pause_seconds * 1000)
             await _capture_live_screenshot("after-manual-pause")
 
         _progress_event(draft_id, "Filling known draft fields.")
-        await _fill_known_fields(page, form_fields, filled_answers)
+        await _fill_known_fields(active_page, form_fields, filled_answers)
         await _capture_live_screenshot("after-known-fields")
+        if not filled_answers:
+            _progress_event(
+                draft_id,
+                "No pre-filled answers available â€” AI agent will attempt to fill "
+                "visible fields using job context only. For best results ensure "
+                "Chrome is connected via CDP and you are logged into the job site.",
+            )
+            # Build a minimal answer set from the job itself so the AI has context
+            filled_answers = {
+                "First Name": (draft.get("filled_answers_json") or ""),
+            }
+            # Parse actual filled_answers from draft if available
+            try:
+                import json as _json_tmp
+                _raw = draft.get("filled_answers_json") or "{}"
+                filled_answers = _json_tmp.loads(_raw) if isinstance(_raw, str) else (_raw or {})
+            except Exception:
+                filled_answers = {}
         await _run_ai_assisted_fill(
-            page,
+            active_page,
             job=job,
             form_fields=form_fields,
-            answers=filled_answers,
+            answers=filled_answers if filled_answers else {},
             allow_submit_click=False,
             on_event=lambda msg: _progress_event(draft_id, msg),
             on_action_executed=lambda action: _capture_live_screenshot(
@@ -957,7 +1221,7 @@ async def _run_submission(
             guidance_provider=lambda: get_submission_guidance(draft_id),
         )
         _progress_event(draft_id, "AI-assisted fill stage completed.")
-        await page.screenshot(path=str(screenshot_path), full_page=True)
+        await active_page.screenshot(path=str(screenshot_path), full_page=True)
         _progress_snapshot(draft_id, str(screenshot_path))
         _progress_event(draft_id, "Captured review screenshot for final confirmation.")
 
@@ -965,7 +1229,7 @@ async def _run_submission(
             _progress_event(draft_id, "Attempting final submit click.")
             await _click_submit_button(page)
             _progress_finish(draft_id, status="submitted")
-            _chat_push_ai(draft_id, "✅ Application submitted successfully!")
+            _chat_push_ai(draft_id, "âœ… Application submitted successfully!")
             return {
                 "status": "submitted",
                 "screenshot_path": str(screenshot_path),
@@ -975,7 +1239,7 @@ async def _run_submission(
         _progress_finish(draft_id, status="ready_for_final_approval")
         _chat_push_ai(
             draft_id,
-            "✅ I've finished filling the form. Please review the screenshot above — "
+            "âœ… I've finished filling the form. Please review the screenshot above â€” "
             "check that all fields look correct. When you're ready, click **Final Submit** "
             "to submit the application, or type here if anything needs fixing."
         )
@@ -987,17 +1251,17 @@ async def _run_submission(
     except asyncio.TimeoutError as exc:
         _progress_event(draft_id, "Submission timed out.", level="error")
         _progress_finish(draft_id, status="failed", error="Timed out loading or operating on the job page")
-        _chat_push_ai(draft_id, "❌ Timed out while loading or operating on the job page. Please try again.")
+        _chat_push_ai(draft_id, "âŒ Timed out while loading or operating on the job page. Please try again.")
         raise ValueError("Timed out loading or operating on the job page") from exc
     except BrowserUnavailableError as exc:
         _progress_event(draft_id, str(exc), level="error")
         _progress_finish(draft_id, status="failed", error=str(exc))
-        _chat_push_ai(draft_id, f"❌ Browser connection failed: {exc}")
+        _chat_push_ai(draft_id, f"âŒ Browser connection failed: {exc}")
         raise
     except Exception:
         _progress_event(draft_id, "Submission engine failed.", level="error")
         _progress_finish(draft_id, status="failed", error="Submission engine failed")
-        _chat_push_ai(draft_id, "❌ Something went wrong during the application process. Check the agent log for details.")
+        _chat_push_ai(draft_id, "âŒ Something went wrong during the application process. Check the agent log for details.")
         logger.exception("Submission engine failed for draft_id=%s", draft_id)
         raise
     finally:
@@ -1042,3 +1306,5 @@ async def confirm_submit_application(
         use_visible_browser=use_visible_browser,
         pause_for_manual_input_seconds=0,
     )
+
+
