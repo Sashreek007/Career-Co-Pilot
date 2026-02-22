@@ -10,12 +10,27 @@ type BackendResume = {
   job_id?: string | null;
   job_title?: string | null;
   job_company?: string | null;
+  template_id?: string | null;
   content_json?: unknown;
   strength_score?: number | null;
   keyword_coverage?: number | null;
   skill_alignment?: number | null;
   created_at?: string | null;
 };
+
+export interface GeneratedVersionSummary {
+  id: string;
+  label: string;
+  type: string;
+  templateId: string;
+  strengthScore: number;
+  createdAt: string;
+}
+
+export interface GenerateAllResult {
+  jobId: string;
+  versions: GeneratedVersionSummary[];
+}
 
 type BackendResumeContent = {
   fragments?: {
@@ -137,6 +152,8 @@ function mapBackendResume(row: BackendResume): ResumeVersion {
     jobId: row.job_id ? String(row.job_id) : undefined,
     jobTitle: row.job_title ? String(row.job_title) : parsedLabel.jobTitle,
     company: row.job_company ? String(row.job_company) : parsedLabel.company,
+    templateId: row.template_id ? String(row.template_id) : 'classic-serif',
+    content: content as Record<string, unknown>,
     fragments: mapContentToFragments(content),
     strengthScore: clampPercent(row.strength_score),
     keywordCoverage: clampPercent(row.keyword_coverage),
@@ -159,20 +176,47 @@ function parseContentDispositionFilename(header: string | null): string | null {
   return plainMatch?.[1] ?? null;
 }
 
+async function fetchRawResumeRows(): Promise<{ status: number; payload: unknown }> {
+  const response = await fetch('/api/resumes');
+  if (!response.ok) {
+    throw new Error(`Failed to fetch resumes (${response.status})`);
+  }
+  return { status: response.status, payload: await response.json() };
+}
+
+function dedupeByJobTemplate(versions: ResumeVersion[]): ResumeVersion[] {
+  const sorted = [...versions].sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt));
+  const seen = new Set<string>();
+  const deduped: ResumeVersion[] = [];
+
+  for (const version of sorted) {
+    const key =
+      version.type === 'tailored'
+        ? `tailored:${version.jobId ?? 'none'}`
+        : `base:${version.templateId ?? 'classic-serif'}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(version);
+  }
+  return deduped;
+}
+
 export async function getResumeVersions(): Promise<ApiResponse<ResumeVersion[]>> {
   await delay(MOCK_DELAY_MS);
   try {
-    const response = await fetch('/api/resumes');
-    if (!response.ok) {
-      throw new Error(`Failed to fetch resumes (${response.status})`);
-    }
-    const payload = await response.json();
+    const { status, payload } = await fetchRawResumeRows();
     if (!Array.isArray(payload)) {
-      return { data: [], status: response.status };
+      return { data: MOCK_RESUME_VERSIONS, status };
+    }
+    const mapped = payload.map((item) => mapBackendResume(item as BackendResume));
+    if (mapped.length === 0) {
+      return { data: MOCK_RESUME_VERSIONS, status };
     }
     return {
-      data: payload.map((item) => mapBackendResume(item as BackendResume)),
-      status: response.status,
+      data: dedupeByJobTemplate(mapped),
+      status,
     };
   } catch {
     return { data: MOCK_RESUME_VERSIONS, status: 200 };
@@ -196,12 +240,26 @@ export async function getResumeVersion(id: string): Promise<ApiResponse<ResumeVe
   }
 }
 
-export async function exportResumeAsJson(id: string): Promise<ApiResponse<ResumeVersion | null>> {
-  return getResumeVersion(id);
+export async function exportResumeAsLatex(id: string): Promise<ApiResponse<{ blob: Blob; filename: string } | null>> {
+  try {
+    const response = await fetch(`/api/resumes/${id}/export/latex`, { method: 'POST' });
+    if (!response.ok) {
+      let errorPayload: unknown = null;
+      try { errorPayload = await response.json(); } catch { /* ignore */ }
+      return { data: null, error: toErrorMessage(errorPayload, `LaTeX export failed (${response.status})`), status: response.status };
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get('Content-Disposition') ?? '';
+    const match = disposition.match(/filename="([^"]+)"/);
+    const filename = match?.[1] ?? `resume-${id}.tex`;
+    return { data: { blob, filename }, status: response.status };
+  } catch {
+    return { data: null, error: 'Network error during LaTeX export', status: 0 };
+  }
 }
 
 export async function exportResumeAsPdf(id: string): Promise<ApiResponse<ResumePdfExportResult | null>> {
-  const response = await fetch(`/api/resumes/${id}/export/pdf`, {
+  let response = await fetch(`/api/resumes/${id}/export/pdf`, {
     method: 'POST',
   });
 
@@ -233,4 +291,79 @@ export async function exportResumeAsPdf(id: string): Promise<ApiResponse<ResumeP
     },
     status: response.status,
   };
+}
+
+export async function updateResumeContent(
+  id: string,
+  content: Record<string, unknown>,
+): Promise<ApiResponse<ResumeVersion | null>> {
+  try {
+    const response = await fetch(`/api/resumes/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content_json: content }),
+    });
+    if (!response.ok) {
+      let errorPayload: unknown = null;
+      try { errorPayload = await response.json(); } catch { /* ignore */ }
+      return {
+        data: null,
+        error: toErrorMessage(errorPayload, `Save failed (${response.status})`),
+        status: response.status,
+      };
+    }
+    const payload = (await response.json()) as BackendResume;
+    return { data: mapBackendResume(payload), status: response.status };
+  } catch {
+    return { data: null, error: 'Network error during save', status: 0 };
+  }
+}
+
+export async function generateAllVersions(jobId: string): Promise<ApiResponse<GenerateAllResult | null>> {
+  try {
+    const response = await fetch('/api/resumes/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ job_id: jobId }),
+    });
+
+    if (!response.ok) {
+      let errorPayload: unknown = null;
+      try { errorPayload = await response.json(); } catch { /* ignore */ }
+      return {
+        data: null,
+        error: toErrorMessage(errorPayload, `Resume generation failed (${response.status})`),
+        status: response.status,
+      };
+    }
+
+    const payload = await response.json() as {
+      id: string;
+      label: string;
+      type: string;
+      job_id?: string;
+      template_id?: string;
+      strength_score?: number;
+      created_at?: string;
+    };
+
+    return {
+      data: {
+        jobId: String(payload.job_id ?? jobId),
+        versions: [
+          {
+            id: String(payload.id ?? ''),
+            label: String(payload.label ?? ''),
+            type: String(payload.type ?? 'tailored'),
+            templateId: String(payload.template_id ?? 'classic-serif'),
+            strengthScore: clampPercent(payload.strength_score ?? 0),
+            createdAt: String(payload.created_at ?? new Date().toISOString()),
+          },
+        ],
+      },
+      status: response.status,
+    };
+  } catch {
+    return { data: null, error: 'Network error during resume generation', status: 0 };
+  }
 }

@@ -6,9 +6,10 @@ interface VersionListProps {
   versions: ResumeVersion[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  activeJobId?: string | null;
 }
 
-export function VersionList({ versions, selectedId, onSelect }: VersionListProps) {
+export function VersionList({ versions, selectedId, onSelect, activeJobId }: VersionListProps) {
   const base = versions
     .filter((v) => v.type === 'base')
     .sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt));
@@ -16,41 +17,46 @@ export function VersionList({ versions, selectedId, onSelect }: VersionListProps
     .filter((v) => v.type === 'tailored')
     .sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt));
 
-  const renderItem = (v: ResumeVersion) => (
-    <button
-      key={v.id}
-      onClick={() => onSelect(v.id)}
-      className={cn(
-        'w-full text-left px-3 py-2.5 rounded-md flex items-start gap-2.5 transition-colors',
-        selectedId === v.id ? 'bg-zinc-700/80 text-zinc-100' : 'text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200'
-      )}
-    >
-      {v.type === 'base' ? (
-        <FileText className="w-4 h-4 mt-0.5 shrink-0" />
-      ) : (
-        <Sparkles className="w-4 h-4 mt-0.5 shrink-0 text-blue-400" />
-      )}
-      <div className="min-w-0">
-        <p className="text-sm font-medium truncate">
-          {v.type === 'base' ? 'Base Resume' : v.company}
-        </p>
-        {v.jobTitle && <p className="text-xs text-zinc-500 truncate">{v.jobTitle}</p>}
-        <div className="flex items-center gap-2 mt-1">
-          <span className={`text-xs font-medium ${v.strengthScore >= 80 ? 'text-green-400' : v.strengthScore >= 65 ? 'text-amber-400' : 'text-zinc-500'}`}>
-            {v.strengthScore}% strength
-          </span>
-          {v.type === 'tailored' && v.company && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-500/15 text-blue-400 border border-blue-500/30">
-              Tailored for {v.company}
+  const renderItem = (v: ResumeVersion) => {
+    const isNew = !!(activeJobId && v.jobId === activeJobId);
+    return (
+      <button
+        key={v.id}
+        onClick={() => onSelect(v.id)}
+        className={cn(
+          'w-full text-left px-3 py-2.5 rounded-md flex items-start gap-2.5 transition-colors',
+          selectedId === v.id ? 'bg-zinc-700/80 text-zinc-100' : 'text-zinc-400 hover:bg-zinc-800/60 hover:text-zinc-200'
+        )}
+      >
+        {v.type === 'base' ? (
+          <FileText className="w-4 h-4 mt-0.5 shrink-0" />
+        ) : (
+          <Sparkles className={cn('w-4 h-4 mt-0.5 shrink-0', isNew ? 'text-emerald-400' : 'text-blue-400')} />
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-1.5">
+            <p className="text-sm font-medium truncate">
+              {v.type === 'base' ? 'Base Resume' : (v.company ?? 'Tailored')}
+            </p>
+            {isNew && (
+              <span className="shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 uppercase tracking-wide">
+                New
+              </span>
+            )}
+          </div>
+          {v.jobTitle && <p className="text-xs text-zinc-500 truncate">{v.jobTitle}</p>}
+          <div className="flex items-center gap-2 mt-1">
+            <span className={`text-xs font-medium ${v.strengthScore >= 80 ? 'text-green-400' : v.strengthScore >= 65 ? 'text-amber-400' : 'text-zinc-500'}`}>
+              {v.strengthScore}% strength
             </span>
-          )}
+          </div>
+          <p className="text-xs text-zinc-500 mt-1">
+            {new Date(v.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+          </p>
         </div>
-        <p className="text-xs text-zinc-500 mt-1">
-          Created: {new Date(v.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-        </p>
-      </div>
-    </button>
-  );
+      </button>
+    );
+  };
 
   return (
     <div className="p-3 space-y-4">

@@ -2,21 +2,21 @@ import { Download, FileType2 } from 'lucide-react';
 
 interface ExportButtonsProps {
   resumeId: string;
-  onExportJson: (id: string) => void | Promise<void>;
+  onExportLatex: (id: string) => void | Promise<void>;
   onExportPdf: (id: string) => void | Promise<void>;
 }
 
-export function ExportButtons({ resumeId, onExportJson, onExportPdf }: ExportButtonsProps) {
+export function ExportButtons({ resumeId, onExportLatex, onExportPdf }: ExportButtonsProps) {
   return (
     <div className="flex items-center gap-2">
       <button
         onClick={() => {
-          void onExportJson(resumeId);
+          void onExportLatex(resumeId);
         }}
         className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium transition-colors"
       >
         <Download className="w-3.5 h-3.5" />
-        Export JSON
+        Export LaTeX
       </button>
       <button
         onClick={() => {

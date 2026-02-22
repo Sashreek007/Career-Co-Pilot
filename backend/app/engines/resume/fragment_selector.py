@@ -192,6 +192,9 @@ def select_fragments(
                 **normalised,
                 "company": entry.get("company", ""),
                 "role": entry.get("role", ""),
+                "startDate": entry.get("startDate") or entry.get("start_date") or "",
+                "endDate": entry.get("endDate") or entry.get("end_date") or "",
+                "current": bool(entry.get("current")),
                 "score": round(score, 4),
                 "selection_reason": _build_reason(normalised, required_skills, score),
             })
