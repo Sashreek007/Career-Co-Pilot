@@ -31,7 +31,7 @@ from ..browser_cdp import (
 logger = logging.getLogger(__name__)
 
 SCREENSHOT_DIR = Path(__file__).resolve().parents[3] / "data" / "screenshots"
-AI_AGENT_MAX_TURNS = 3
+AI_AGENT_MAX_TURNS = 5
 AI_AGENT_MAX_ACTIONS_PER_TURN = 6
 AI_AGENT_MAX_CONTROLS = 120
 PROGRESS_EVENT_LIMIT = 160
@@ -1031,6 +1031,82 @@ def _expected_graduation_text(profile_row: dict[str, Any]) -> str:
     return _format_month_year(latest)
 
 
+def _extract_gpa_percentage(profile_row: dict[str, Any]) -> str:
+    resume_text = _normalize_space(profile_row.get("resume_text"))
+    parsed = _parse_json_obj(profile_row.get("resume_parsed_json"))
+    parsed_text = _normalize_space(parsed.get("raw_text"))
+    blob = f"{resume_text}\n{parsed_text}".strip()
+    if not blob:
+        return ""
+
+    direct_pct = re.search(r"\bgpa[^\n]{0,40}?(\d{2,3}(?:\.\d+)?)\s*%\b", blob, re.IGNORECASE)
+    if direct_pct:
+        return str(int(float(direct_pct.group(1))))
+
+    ratio = re.search(r"\bgpa[^\n]{0,40}?(\d(?:\.\d+)?)\s*/\s*4(?:\.0+)?\b", blob, re.IGNORECASE)
+    if ratio:
+        raw = float(ratio.group(1))
+        pct = int(round((raw / 4.0) * 100))
+        return str(max(0, min(100, pct)))
+    return ""
+
+
+def _infer_current_study_year(profile_row: dict[str, Any]) -> str:
+    education = _safe_json_list(profile_row.get("education_json"))
+    parsed = _parse_json_obj(profile_row.get("resume_parsed_json"))
+    if not education:
+        education = _safe_json_list(parsed.get("education"))
+    if not education:
+        return ""
+
+    latest = education[-1]
+    start_date = _normalize_space(latest.get("startDate") or latest.get("start_date"))
+    if not start_date:
+        return ""
+    match = re.match(r"^(\d{4})-(\d{2})", start_date)
+    if not match:
+        return ""
+    start_year = int(match.group(1))
+    start_month = int(match.group(2))
+    now = datetime.utcnow()
+    months = (now.year - start_year) * 12 + (now.month - start_month)
+    if months < 0:
+        return "1"
+    # Clamp to common undergrad span to avoid absurd values for old profiles.
+    year_num = max(1, min(6, (months // 12) + 1))
+    return str(year_num)
+
+
+def _infer_education_level(profile_row: dict[str, Any]) -> str:
+    education = _safe_json_list(profile_row.get("education_json"))
+    parsed = _parse_json_obj(profile_row.get("resume_parsed_json"))
+    if not education:
+        education = _safe_json_list(parsed.get("education"))
+    if not education:
+        return ""
+
+    latest = education[-1]
+    degree = _normalize_space(latest.get("degree") or latest.get("degreeName")).lower()
+    end_date = _normalize_space(latest.get("endDate") or latest.get("end_date"))
+    is_future = False
+    match = re.match(r"^(\d{4})-(\d{2})", end_date)
+    if match:
+        end_year = int(match.group(1))
+        end_month = int(match.group(2))
+        now = datetime.utcnow()
+        is_future = (end_year, end_month) >= (now.year, now.month)
+
+    if "high school" in degree:
+        return "High school"
+    if "associate" in degree:
+        return "Pursuing Associates" if is_future else "Associates"
+    if "bachelor" in degree or "b.sc" in degree or "btech" in degree:
+        return "Pursuing Bachelors" if is_future else "New Grad (Bachelors)"
+    if "master" in degree or "m.sc" in degree or "mba" in degree or "phd" in degree or "doctor" in degree:
+        return "Pursuing Masters / Doctorate" if is_future else "New Grad (Masters)"
+    return ""
+
+
 def _load_profile_row(db_conn: sqlite3.Connection, profile_id: str) -> dict[str, Any]:
     row = db_conn.execute("SELECT * FROM user_profile WHERE id = ?", (profile_id,)).fetchone()
     if row is None and profile_id != "local":
@@ -1053,6 +1129,9 @@ def _derive_runtime_hints(profile_row: dict[str, Any], job: dict[str, Any]) -> d
         work_auth = "Yes"
         sponsorship = "No"
 
+    gpa_percentage = _extract_gpa_percentage(profile_row)
+    study_year = _infer_current_study_year(profile_row)
+
     return {
         "full_name": name,
         "first_name": first_name,
@@ -1071,8 +1150,12 @@ def _derive_runtime_hints(profile_row: dict[str, Any], job: dict[str, Any]) -> d
         "work_auth": work_auth,
         "sponsorship": sponsorship,
         "graduation": _expected_graduation_text(profile_row),
+        "education_level": _infer_education_level(profile_row),
+        "current_study_year": study_year,
+        "gpa_percentage": gpa_percentage,
         "summary": _normalize_space(profile_row.get("summary") or resume_parsed.get("summary")),
         "resume_text": resume_text,
+        "resume_file_path": _normalize_space(profile_row.get("resume_file_path")),
     }
 
 
@@ -1162,12 +1245,28 @@ def _runtime_value_for_label(
         return hints.get("linkedin") or None
     if "github" in lowered:
         return hints.get("github") or None
+    if "resume" in lowered or lowered == "cv" or "resume/cv" in lowered:
+        return hints.get("resume_file_path") or None
     if "portfolio" in lowered or "website" in lowered:
         return hints.get("portfolio") or hints.get("github") or hints.get("linkedin") or None
     if "legally authorized" in lowered or "work authorization" in lowered or "authorized to work" in lowered:
         return hints.get("work_auth") or None
     if "sponsorship" in lowered or "visa" in lowered:
         return hints.get("sponsorship") or None
+    if "year of study" in lowered or "current year" in lowered:
+        return hints.get("current_study_year") or None
+    if "placements have you completed" in lowered or "internship placements" in lowered or "co-op placements" in lowered:
+        return "0"
+    if (
+        "co-op" in lowered or "coop" in lowered or "intern placement" in lowered or "term length" in lowered
+    ) and ("how long" in lowered or "seeking" in lowered):
+        return "4 months"
+    if "did you attach your transcript" in lowered or ("transcript" in lowered and ("attached" in lowered or "upload" in lowered)):
+        return "No"
+    if "gpa as a percentage" in lowered or ("gpa" in lowered and "percentage" in lowered):
+        return hints.get("gpa_percentage") or "80"
+    if "highest level of education" in lowered:
+        return hints.get("education_level") or None
     if "graduation" in lowered and ("month" in lowered or "year" in lowered or "date" in lowered):
         return hints.get("graduation") or None
 
@@ -1297,6 +1396,7 @@ async def _best_effort_fill_required_controls(
               const fallbackPhone = normalize(hints.phone || '0000000000');
               const fallbackEmail = normalize(hints.email || 'applicant@example.com');
               const fallbackSummary = normalize(hints.summary || 'N/A');
+              const fallbackEducationLevel = normalize(hints.education_level || '');
 
               const resolveValue = (label, el) => {
                 const lowered = normalize(label).toLowerCase();
@@ -1353,11 +1453,31 @@ async def _best_effort_fill_required_controls(
                     radioHandled.add(groupName);
                     continue;
                   }
-                  const firstEnabled = document.querySelector(`input[type="radio"][name="${CSS.escape(groupName)}"]:not([disabled])`);
-                  if (firstEnabled) {
-                    firstEnabled.click();
-                    firstEnabled.dispatchEvent(new Event('change', { bubbles: true }));
-                    filled[label] = 'selected';
+                  const groupRadios = Array.from(document.querySelectorAll(`input[type="radio"][name="${CSS.escape(groupName)}"]:not([disabled])`)).filter(isVisible);
+                  let chosen = null;
+                  const groupContext = normalize((groupRadios[0]?.closest('fieldset, section, div')?.textContent) || '');
+
+                  if (!chosen && fallbackEducationLevel && /(education|degree|highest level|year of study)/i.test(`${label} ${groupName} ${groupContext}`)) {
+                    chosen = groupRadios.find((radio) => {
+                      const optionText = normalize(getLabel(radio)).toLowerCase();
+                      if (!optionText) return false;
+                      return optionText.includes(fallbackEducationLevel.toLowerCase()) || fallbackEducationLevel.toLowerCase().includes(optionText);
+                    }) || null;
+                  }
+
+                  if (!chosen && /(authorized|entitled to work|legally authorized|willing|able to commute)/i.test(groupContext)) {
+                    chosen = groupRadios.find((radio) => normalize(getLabel(radio)).toLowerCase() === 'yes') || null;
+                  }
+                  if (!chosen && /(sponsorship|visa|previous employee|contingent worker)/i.test(groupContext)) {
+                    chosen = groupRadios.find((radio) => normalize(getLabel(radio)).toLowerCase() === 'no') || null;
+                  }
+                  if (!chosen && groupRadios.length) {
+                    chosen = groupRadios[0];
+                  }
+                  if (chosen) {
+                    chosen.click();
+                    chosen.dispatchEvent(new Event('change', { bubbles: true }));
+                    filled[label] = normalize(getLabel(chosen)) || 'selected';
                     radioHandled.add(groupName);
                     continue;
                   }
@@ -1421,6 +1541,61 @@ async def _best_effort_fill_required_controls(
                 }
               }
 
+              // Fallback for visible Yes/No button groups (common in Workday custom widgets).
+              const normalizeQuestion = (value) => normalize(value).toLowerCase();
+              const isSelectedButton = (btn) => {
+                const pressed = String(btn.getAttribute('aria-pressed') || '').toLowerCase();
+                if (pressed === 'true') return true;
+                const classes = String(btn.className || '').toLowerCase();
+                return /(selected|active|checked|is-selected)/i.test(classes);
+              };
+              const yesNoContainers = Array.from(document.querySelectorAll('fieldset, section, div')).filter((node) => {
+                if (!isVisible(node)) return false;
+                const buttons = Array.from(node.querySelectorAll('button, [role="button"]')).filter(isVisible);
+                if (!buttons.length) return false;
+                const hasYes = buttons.some((btn) => normalize(btn.textContent || '').toLowerCase() === 'yes');
+                const hasNo = buttons.some((btn) => normalize(btn.textContent || '').toLowerCase() === 'no');
+                return hasYes && hasNo;
+              });
+              for (const container of yesNoContainers) {
+                const question = normalizeQuestion(container.textContent || '');
+                const buttons = Array.from(container.querySelectorAll('button, [role="button"]')).filter(isVisible);
+                const yesBtn = buttons.find((btn) => normalize(btn.textContent || '').toLowerCase() === 'yes');
+                const noBtn = buttons.find((btn) => normalize(btn.textContent || '').toLowerCase() === 'no');
+                if (!yesBtn || !noBtn) continue;
+                if (isSelectedButton(yesBtn) || isSelectedButton(noBtn) || container.querySelector('input[type="radio"]:checked')) {
+                  continue;
+                }
+                let preferred = '';
+                if (/(sponsorship|visa)/i.test(question)) preferred = 'no';
+                else if (/(previous employee|contingent worker|worked here before)/i.test(question)) preferred = 'no';
+                else if (/(authorized|entitled to work|legally authorized|willing|able to commute)/i.test(question)) preferred = 'yes';
+                if (!preferred) continue;
+                const targetBtn = preferred === 'yes' ? yesBtn : noBtn;
+                targetBtn.click();
+                targetBtn.dispatchEvent(new Event('click', { bubbles: true }));
+                filled[`question:${question.slice(0, 60)}`] = preferred;
+              }
+
+              // Fallback for custom location combobox widgets.
+              const comboInputs = Array.from(document.querySelectorAll('input[role="combobox"], [role="combobox"] input, input[aria-autocomplete]')).filter(isVisible);
+              for (const input of comboInputs) {
+                const label = getLabel(input);
+                const lowered = normalize(label).toLowerCase();
+                if (!/(location|city|country)/i.test(lowered)) continue;
+                if (normalize(input.value || '')) continue;
+                const desired = /(country)/i.test(lowered) ? country : fallbackCity;
+                if (!desired) continue;
+                input.focus();
+                input.value = '';
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.value = desired;
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+                input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+                filled[label || `combobox:${Object.keys(filled).length + 1}`] = desired;
+              }
+
               return filled;
             }
             """,
@@ -1459,6 +1634,12 @@ async def _apply_value_to_control(locator, value: str) -> bool:
     tag = str(meta.get("tag") or "").lower()
     field_type = str(meta.get("type") or "").lower()
     try:
+        if field_type == "file":
+            file_path = Path(normalized).expanduser()
+            if not file_path.exists():
+                return False
+            await locator.set_input_files(str(file_path))
+            return True
         if tag == "select":
             try:
                 await locator.select_option(label=normalized)
@@ -1526,6 +1707,30 @@ async def _apply_value_to_control(locator, value: str) -> bool:
         return False
 
 
+async def _set_resume_file_input(page, file_path: str) -> bool:
+    normalized = _normalize_space(file_path)
+    if not normalized:
+        return False
+    candidate = Path(normalized).expanduser()
+    if not candidate.exists():
+        return False
+    selectors = [
+        "input[type='file']",
+        "input[type='file'][accept*='pdf']",
+        "input[type='file'][accept*='doc']",
+    ]
+    for selector in selectors:
+        locator = page.locator(selector).first
+        try:
+            if await locator.count() == 0:
+                continue
+            await locator.set_input_files(str(candidate))
+            return True
+        except Exception:
+            continue
+    return False
+
+
 async def _autofill_live_required_fields(
     page,
     *,
@@ -1561,11 +1766,19 @@ async def _autofill_live_required_fields(
             continue
         locator = await _locate_field_control(page, label)
         if locator is None:
+            if ("resume" in _normalize_label_text(label).lower() or "cv" in _normalize_label_text(label).lower()) and await _set_resume_file_input(page, value):
+                filled[label] = value
+                answers[label] = value
+                await asyncio.sleep(0.2)
             continue
         if await _apply_value_to_control(locator, value):
             filled[label] = value
             answers[label] = value
             await asyncio.sleep(0.15)
+        elif ("resume" in _normalize_label_text(label).lower() or "cv" in _normalize_label_text(label).lower()) and await _set_resume_file_input(page, value):
+            filled[label] = value
+            answers[label] = value
+            await asyncio.sleep(0.2)
 
     remaining = [label for label in missing_labels if label not in filled]
     if remaining:
@@ -1585,6 +1798,62 @@ async def _autofill_live_required_fields(
     if filled:
         remember_field_answers(profile_id, site_domain, filled)
     return filled
+
+
+async def _expand_repeatable_profile_sections(page, profile_row: dict[str, Any]) -> int:
+    experiences = _safe_json_list(profile_row.get("experience_json"))
+    education = _safe_json_list(profile_row.get("education_json"))
+    wants_work = len(experiences) > 0
+    wants_education = len(education) > 0
+    if not wants_work and not wants_education:
+        return 0
+    try:
+        result = await page.evaluate(
+            """
+            ({ wantsWork, wantsEducation }) => {
+              const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+              const isVisible = (el) => {
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && rect.width > 0 && rect.height > 0;
+              };
+              const clickAddNear = (pattern) => {
+                const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,legend,label,strong,span,div,p'))
+                  .filter((el) => isVisible(el) && pattern.test(normalize(el.textContent || '')));
+                for (const heading of headings) {
+                  let node = heading;
+                  for (let depth = 0; depth < 4 && node; depth += 1) {
+                    const region = node.parentElement || node;
+                    const regionText = normalize(region.textContent || '');
+                    // If the section already expanded with real fields/items, avoid adding duplicate empty blocks.
+                    if (/(job title|work experience 1|school or university|degree|education 1)/i.test(regionText)) {
+                      return false;
+                    }
+                    const buttons = Array.from(region.querySelectorAll('button, [role="button"], a'))
+                      .filter((el) => isVisible(el) && normalize(el.textContent || '') === 'add');
+                    if (buttons.length) {
+                      buttons[0].click();
+                      return true;
+                    }
+                    node = node.parentElement;
+                  }
+                }
+                return false;
+              };
+              let clicks = 0;
+              if (wantsWork && clickAddNear(/work experience/)) clicks += 1;
+              if (wantsEducation && clickAddNear(/education/)) clicks += 1;
+              return clicks;
+            }
+            """,
+            {"wantsWork": wants_work, "wantsEducation": wants_education},
+        )
+    except Exception:
+        return 0
+    try:
+        return int(result or 0)
+    except Exception:
+        return 0
 
 
 def _is_review_placeholder(value: Any) -> bool:
@@ -1677,6 +1946,48 @@ def _parse_label_value_pairs(text: str) -> dict[str, str]:
     return parsed
 
 
+def _freeform_value_for_label(text: str, label: str) -> str | None:
+    lowered = _normalize_space(text).lower()
+    label_lower = _normalize_label_text(label).lower()
+    if not lowered or not label_lower:
+        return None
+
+    if any(token in label_lower for token in ("location", "city", "country")):
+        if "canada" in lowered:
+            return "Canada"
+        if "united states" in lowered or re.search(r"\busa?\b", lowered):
+            return "United States"
+        if "india" in lowered:
+            return "India"
+
+    if any(token in label_lower for token in ("authorized", "legally authorized", "able to", "willing", "eligib")):
+        if re.search(r"\byes\b", lowered):
+            return "Yes"
+        if re.search(r"\bno\b", lowered):
+            return "No"
+
+    if any(token in label_lower for token in ("sponsorship", "visa")):
+        if re.search(r"\bno\b", lowered):
+            return "No"
+        if re.search(r"\byes\b", lowered):
+            return "Yes"
+
+    if "education" in label_lower or "degree" in label_lower:
+        if "bachelor" in lowered:
+            return "Pursuing Bachelors"
+        if "master" in lowered:
+            return "Pursuing Masters / Doctorate"
+        if "high school" in lowered:
+            return "High school"
+
+    if "gpa" in label_lower:
+        numeric = re.search(r"\b(\d{1,3}(?:\.\d+)?)\b", lowered)
+        if numeric:
+            return numeric.group(1)
+
+    return None
+
+
 def _user_signal(text: str) -> str:
     lowered = _normalize_space(text).lower()
     if not lowered:
@@ -1703,11 +2014,19 @@ def _extract_clarifications_from_chat(draft_id: str, target_labels: list[str]) -
         return {}
     resolved: dict[str, str] = {}
     for msg in _latest_user_messages(draft_id):
-        pairs = _parse_label_value_pairs(str(msg.get("text") or ""))
+        text = str(msg.get("text") or "")
+        pairs = _parse_label_value_pairs(text)
         for key, value in pairs.items():
             label = _match_field_label(target_labels, key)
             if label and value:
                 resolved[label] = value
+        # Fallback: infer values from free-form replies for any still-unresolved target.
+        for label in target_labels:
+            if label in resolved:
+                continue
+            inferred = _freeform_value_for_label(text, label)
+            if inferred:
+                resolved[label] = inferred
     return resolved
 
 
@@ -2099,6 +2418,112 @@ async def _detect_missing_required_fields(page) -> list[str]:
         seen.add(key)
         deduped.append(label)
     return deduped
+
+
+async def _detect_empty_fillable_fields(page) -> list[str]:
+    try:
+        raw = await page.evaluate(
+            """
+            () => {
+              const controls = Array.from(document.querySelectorAll('input, textarea, select'));
+              const labels = [];
+              const isVisible = (el) => {
+                const style = window.getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+                if (rect.width <= 0 || rect.height <= 0) return false;
+                if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+                const hiddenParent = el.closest('[hidden], [aria-hidden="true"], .hidden, nav, header');
+                return !hiddenParent;
+              };
+              const normalize = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+              const keyword = /(name|email|phone|mobile|country|city|location|address|postal|zip|authorized|sponsor|visa|study|education|degree|gpa|transcript|resume|cv|experience|company|title|school|university|skills?)/i;
+
+              for (const el of controls) {
+                if (!isVisible(el)) continue;
+                const tag = String(el.tagName || '').toLowerCase();
+                const type = String(el.getAttribute('type') || '').toLowerCase();
+                if (['hidden', 'submit', 'reset', 'button', 'image'].includes(type)) continue;
+
+                const required = el.hasAttribute('required') || el.getAttribute('aria-required') === 'true';
+                let label = '';
+                const id = el.getAttribute('id');
+                if (id) {
+                  const bound = document.querySelector(`label[for="${id}"]`);
+                  if (bound) label = normalize(bound.textContent || '');
+                }
+                if (!label) {
+                  const parent = el.closest('label');
+                  if (parent) label = normalize(parent.textContent || '');
+                }
+                if (!label) label = normalize(el.getAttribute('aria-label') || '');
+                if (!label) label = normalize(el.getAttribute('placeholder') || '');
+                if (!label) label = normalize(el.getAttribute('name') || '');
+                if (!label) label = `${tag}:${type || 'field'}`;
+                label = label.replace(/\\*/g, ' ').replace(/\\s+/g, ' ').trim().replace(/[:\\-\\.]$/, '').trim();
+
+                let empty = false;
+                if (type === 'checkbox' || type === 'radio') {
+                  empty = false;
+                } else if (type === 'file') {
+                  const files = el.files;
+                  empty = !files || files.length === 0;
+                } else if (tag === 'select') {
+                  const selected = (el.selectedOptions && el.selectedOptions.length) ? el.selectedOptions[0] : null;
+                  const selectedText = normalize(selected?.textContent || '').toLowerCase();
+                  const selectedValue = normalize(el.value || '').toLowerCase();
+                  empty = !selectedValue || /^(select|choose|please select|none|--)/i.test(selectedText) || /^(select|choose|none|n\\/a|na|--)/i.test(selectedValue);
+                } else {
+                  empty = !normalize(el.value || '');
+                }
+                if (!empty) continue;
+
+                const lowered = label.toLowerCase();
+                const include = required || tag === 'select' || tag === 'textarea' || keyword.test(lowered);
+                if (!include) continue;
+
+                labels.push(label);
+                if (labels.length >= 40) break;
+              }
+              return labels;
+            }
+            """
+        )
+    except Exception:
+        return []
+    if not isinstance(raw, list):
+        return []
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        label = _normalize_space(item)
+        if not label:
+            continue
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(label)
+    return deduped
+
+
+async def _detect_fill_targets(page) -> list[str]:
+    required = await _detect_missing_required_fields(page)
+    empty = await _detect_empty_fillable_fields(page)
+    combined: list[str] = []
+    seen: set[str] = set()
+    for label in [*required, *empty]:
+        normalized = _normalize_space(label)
+        if not normalized:
+            continue
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        combined.append(normalized)
+        if len(combined) >= 50:
+            break
+    return combined
 
 
 async def _click_progress_continue_button(page) -> str | None:
@@ -2678,6 +3103,7 @@ async def _run_submission(
     user_gates_triggered = 0
     clarification_rounds = 0
     had_missing_required_block = False
+    repeatables_expanded = False
     run_profile_id = _normalize_space(draft.get("profile_id")) or _resolve_active_profile_id(db_conn)
     profile_row = _load_profile_row(db_conn, run_profile_id)
 
@@ -2843,6 +3269,18 @@ async def _run_submission(
             level="debug",
         )
 
+        if not repeatables_expanded:
+            expand_clicks = await _expand_repeatable_profile_sections(page, profile_row)
+            if expand_clicks > 0:
+                repeatables_expanded = True
+                _progress_event(
+                    draft_id,
+                    f"Expanded {expand_clicks} repeatable profile section(s) (work/education).",
+                    level="debug",
+                )
+                await page.wait_for_timeout(700)
+                await _capture_live_screenshot("after-expand-repeatables")
+
         await _set_phase(PHASE_FILLING, "fill-known")
         _progress_event(draft_id, "Filling known draft fields.")
         await _fill_known_fields(page, form_fields, filled_answers)
@@ -2912,11 +3350,11 @@ async def _run_submission(
             if fourth_gate != USER_ACTION_NONE:
                 user_gates_triggered += 1
 
-        missing_required = await _detect_missing_required_fields(page)
-        if missing_required:
+        fill_targets = await _detect_fill_targets(page)
+        if fill_targets:
             changed_from_chat = _apply_chat_clarifications(
                 draft_id,
-                target_labels=missing_required,
+                target_labels=fill_targets,
                 answers=filled_answers,
                 profile_id=run_profile_id,
                 site_domain=site_domain,
@@ -2928,7 +3366,7 @@ async def _run_submission(
                 )
             autofilled_required = await _autofill_live_required_fields(
                 page,
-                missing_labels=missing_required,
+                missing_labels=fill_targets,
                 answers=filled_answers,
                 profile_id=run_profile_id,
                 site_domain=site_domain,
@@ -2946,12 +3384,25 @@ async def _run_submission(
                 )
                 await page.wait_for_timeout(500)
                 await _capture_live_screenshot("after-required-autofill")
-                missing_required = await _detect_missing_required_fields(page)
+                fill_targets = await _detect_fill_targets(page)
 
-        if missing_required:
+        if fill_targets:
             had_missing_required_block = True
-            pending_missing: list[str] = list(missing_required)
+            pending_missing: list[str] = list(fill_targets)
             for attempt in range(1, 5):
+                changed_from_chat = _apply_chat_clarifications(
+                    draft_id,
+                    target_labels=pending_missing,
+                    answers=filled_answers,
+                    profile_id=run_profile_id,
+                    site_domain=site_domain,
+                )
+                if changed_from_chat:
+                    _progress_event(
+                        draft_id,
+                        f"Autonomous retry {attempt}: applied {changed_from_chat} clarification answer(s).",
+                        level="debug",
+                    )
                 retried = await _autofill_live_required_fields(
                     page,
                     missing_labels=pending_missing,
@@ -2971,7 +3422,7 @@ async def _run_submission(
                 if progressed:
                     _progress_event(draft_id, f"Autonomous retry {attempt}: clicked '{progressed}'.", level="debug")
                     await page.wait_for_timeout(700)
-                pending_missing = await _detect_missing_required_fields(page)
+                pending_missing = await _detect_fill_targets(page)
                 if not pending_missing:
                     break
 
@@ -3014,7 +3465,14 @@ async def _run_submission(
 
         if use_visible_browser:
             # Keep the run alive until operator explicitly marks done.
-            for cycle in range(1, 7):
+            max_continue_cycles = _int_env(
+                "APPLICATION_OPERATOR_CONTINUE_MAX_CYCLES",
+                default=40,
+                minimum=6,
+                maximum=200,
+            )
+            cycle = 0
+            while cycle < max_continue_cycles:
                 decision = await _wait_for_user_action(
                     draft_id,
                     action=USER_ACTION_FINAL_REVIEW,
@@ -3027,13 +3485,34 @@ async def _run_submission(
                     allow_timeout=True,
                     require_continue_ack=False,
                 )
+                if decision == "timeout":
+                    _progress_event(
+                        draft_id,
+                        "No new operator input yet. Keeping browser session active.",
+                        level="debug",
+                    )
+                    continue
+                if decision == "done":
+                    break
                 if decision != "continue":
                     break
 
+                cycle += 1
                 _progress_event(draft_id, f"Operator requested continue cycle {cycle}.")
                 await _set_phase(PHASE_AI_OPERATING, f"operator-continue-{cycle}")
 
-                pre_missing = await _detect_missing_required_fields(page)
+                if not repeatables_expanded:
+                    expand_clicks = await _expand_repeatable_profile_sections(page, profile_row)
+                    if expand_clicks > 0:
+                        repeatables_expanded = True
+                        _progress_event(
+                            draft_id,
+                            f"Expanded {expand_clicks} repeatable profile section(s) (work/education).",
+                            level="debug",
+                        )
+                        await page.wait_for_timeout(650)
+
+                pre_missing = await _detect_fill_targets(page)
                 if pre_missing:
                     changed_from_chat = _apply_chat_clarifications(
                         draft_id,
@@ -3047,6 +3526,22 @@ async def _run_submission(
                             draft_id,
                             f"Applied {changed_from_chat} operator-provided clarification value(s).",
                         )
+                    pre_filled = await _autofill_live_required_fields(
+                        page,
+                        missing_labels=pre_missing,
+                        answers=filled_answers,
+                        profile_id=run_profile_id,
+                        site_domain=site_domain,
+                        profile_row=profile_row,
+                        job=job,
+                    )
+                    if pre_filled:
+                        _progress_event(
+                            draft_id,
+                            f"Cycle {cycle}: auto-filled {len(pre_filled)} field(s) before navigation.",
+                            level="debug",
+                        )
+                        await page.wait_for_timeout(350)
 
                 progressed_label = await _click_progress_continue_button(page)
                 if progressed_label:
@@ -3065,9 +3560,22 @@ async def _run_submission(
                     site_playbook_notes=site_playbook_notes,
                 )
 
-                missing_cycle = await _detect_missing_required_fields(page)
+                missing_cycle = await _detect_fill_targets(page)
                 if missing_cycle:
-                    await _autofill_live_required_fields(
+                    changed_from_chat = _apply_chat_clarifications(
+                        draft_id,
+                        target_labels=missing_cycle,
+                        answers=filled_answers,
+                        profile_id=run_profile_id,
+                        site_domain=site_domain,
+                    )
+                    if changed_from_chat:
+                        _progress_event(
+                            draft_id,
+                            f"Cycle {cycle}: applied {changed_from_chat} operator clarification value(s).",
+                            level="debug",
+                        )
+                    cycle_filled = await _autofill_live_required_fields(
                         page,
                         missing_labels=missing_cycle,
                         answers=filled_answers,
@@ -3076,12 +3584,18 @@ async def _run_submission(
                         profile_row=profile_row,
                         job=job,
                     )
+                    if cycle_filled:
+                        _progress_event(
+                            draft_id,
+                            f"Cycle {cycle}: auto-filled {len(cycle_filled)} additional field(s).",
+                            level="debug",
+                        )
                     await page.wait_for_timeout(450)
                     progressed_cycle = await _click_progress_continue_button(page)
                     if progressed_cycle:
                         _progress_event(draft_id, f"Advanced wizard step using '{progressed_cycle}'.")
                         await page.wait_for_timeout(650)
-                    remaining_cycle = await _detect_missing_required_fields(page)
+                    remaining_cycle = await _detect_fill_targets(page)
                     if remaining_cycle:
                         await _capture_live_screenshot(f"cycle-{cycle}-needs-answer")
                         _chat_push_ai(
@@ -3092,6 +3606,18 @@ async def _run_submission(
                         )
 
                 await _capture_live_screenshot(f"operator-continue-{cycle}-result")
+
+            if cycle >= max_continue_cycles:
+                _progress_event(
+                    draft_id,
+                    f"Reached max continue cycles ({max_continue_cycles}). Waiting for your final review.",
+                    level="warn",
+                )
+                _chat_push_ai(
+                    draft_id,
+                    "I reached the max background continue cycles for this run. "
+                    "You can start another run to continue from here, or finalize this one.",
+                )
 
         _progress_require_user_action(
             draft_id,
