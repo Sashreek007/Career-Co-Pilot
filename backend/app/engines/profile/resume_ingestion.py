@@ -30,7 +30,7 @@ PLAIN_LINK_RE = re.compile(
 DATE_TOKEN_RE = re.compile(r"(20\d{2}|19\d{2})(?:[-/](0[1-9]|1[0-2]))?")
 NON_WORD_SKILL_CHARS_RE = re.compile(r"[^a-z0-9+#]+")
 HEADING_RE = re.compile(
-    r"^(summary|objective|skills|technical skills|experience|work experience|projects|certifications?)\s*:?\s*$",
+    r"^(summary|objective|skills|technical skills|experience|work experience|projects|certifications?|education|academics?)\s*:?\s*$",
     re.IGNORECASE,
 )
 
@@ -540,6 +540,99 @@ def _extract_certifications_from_text(text: str) -> list[dict[str, Any]]:
     return entries[:20]
 
 
+def _extract_education_from_text(text: str) -> list[dict[str, Any]]:
+    lines = _extract_section_lines(text, ("education", "academic", "academics"))
+    if not lines:
+        return []
+
+    entries: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+
+    def push_current() -> None:
+        nonlocal current
+        if not current:
+            return
+        if not (current.get("institution") or current.get("degree") or current.get("field")):
+            current = None
+            return
+        entries.append(current)
+        current = None
+
+    for line in lines:
+        if not line:
+            push_current()
+            continue
+
+        cleaned = re.sub(r"^[\-\u2022*]\s*", "", line).strip()
+        if not cleaned:
+            continue
+        lowered = cleaned.lower()
+
+        if (
+            current is not None
+            and ("university" in lowered or "college" in lowered or "institute" in lowered or "school" in lowered)
+            and current.get("institution")
+            and current.get("degree")
+        ):
+            push_current()
+
+        if current is None:
+            current = {
+                "institution": "",
+                "degree": "",
+                "field": "",
+                "start_date": "",
+                "end_date": "",
+                "gpa": "",
+                "location": "",
+            }
+
+        if "gpa" in lowered:
+            match = re.search(r"gpa[:\s]*([0-9.]+)", cleaned, re.IGNORECASE)
+            current["gpa"] = match.group(1) if match else cleaned
+            continue
+
+        if re.search(r"\b(19|20)\d{2}\b", cleaned):
+            date_parts = re.split(r"\s*[–-]\s*", cleaned, maxsplit=1)
+            if len(date_parts) == 2 and re.search(r"\b(19|20)\d{2}\b", date_parts[0]) and re.search(
+                r"\b(19|20)\d{2}\b|present|current|now",
+                date_parts[1],
+                re.IGNORECASE,
+            ):
+                current["start_date"] = date_parts[0]
+                current["end_date"] = date_parts[1]
+            elif not current.get("start_date"):
+                current["start_date"] = cleaned
+            elif not current.get("end_date"):
+                current["end_date"] = cleaned
+            continue
+
+        if "," in cleaned and re.search(r"\b[A-Z]{2}\b", cleaned):
+            if not current.get("location"):
+                current["location"] = cleaned
+            continue
+
+        if any(token in lowered for token in ("b.sc", "b.s", "btech", "b.tech", "bachelor", "master", "m.sc", "m.s", "phd", "diploma", "certificate")):
+            if not current.get("degree"):
+                current["degree"] = cleaned
+                continue
+
+        if any(token in lowered for token in ("major", "minor", "field", "coursework", "computer", "engineering", "science", "arts", "business")):
+            if not current.get("field"):
+                current["field"] = cleaned.split(":", 1)[-1].strip()
+                continue
+
+        if not current.get("institution"):
+            current["institution"] = cleaned
+        elif not current.get("degree"):
+            current["degree"] = cleaned
+        elif not current.get("field"):
+            current["field"] = cleaned
+
+    push_current()
+    return entries[:10]
+
+
 def _extract_json_block(raw: str) -> str:
     text = str(raw or "").strip()
     if not text:
@@ -657,6 +750,12 @@ def _extract_section_with_ai(
             "Return JSON array only.\n"
             'Schema item: { "name": string, "issuer": string, "date_obtained": string, "url": string }'
         ),
+        "education": (
+            "Extract ONLY education entries from this resume.\n"
+            "Return JSON array only.\n"
+            'Schema item: { "institution": string, "degree": string, "field": string, "start_date": string, '
+            '"end_date": string, "gpa": string, "location": string }'
+        ),
         "skills": (
             "Extract ONLY technical skills from this resume.\n"
             "Return JSON array of strings only.\n"
@@ -743,6 +842,9 @@ def _extract_structured_with_ai(
         '      "end_date": string\n'
         "    }\n"
         "  ],\n"
+        '  "education": [\n'
+        '    { "institution": string, "degree": string, "field": string, "start_date": string, "end_date": string, "gpa": string, "location": string }\n'
+        "  ],\n"
         '  "certifications": [\n'
         '    { "name": string, "issuer": string, "date_obtained": string, "url": string }\n'
         "  ],\n"
@@ -773,7 +875,7 @@ def _extract_structured_with_ai(
     result: dict[str, Any] = parsed if isinstance(parsed, dict) else {}
 
     # Backfill missing sections with focused prompts.
-    for section in ("experiences", "projects", "certifications", "skills", "role_interests"):
+    for section in ("experiences", "projects", "education", "certifications", "skills", "role_interests"):
         if _ensure_json_list(result.get(section)):
             continue
         recovered = _extract_section_with_ai(
@@ -1070,6 +1172,46 @@ def _normalise_certifications(raw_values: Any) -> list[dict[str, Any]]:
     return output[:20]
 
 
+def _normalise_education(raw_values: Any) -> list[dict[str, Any]]:
+    values = _ensure_json_list(raw_values)
+    output: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for item in values:
+        if not isinstance(item, dict):
+            continue
+        institution = _clean_text(item.get("institution") or item.get("school") or item.get("university") or item.get("college"))
+        degree = _clean_text(item.get("degree") or item.get("qualification") or item.get("credential"))
+        field = _clean_text(item.get("field") or item.get("field_of_study") or item.get("major"))
+        gpa = _clean_text(item.get("gpa"))
+        location = _clean_text(item.get("location") or item.get("city"))
+        start_date = _normalise_date_value(item.get("start_date") or item.get("startDate") or item.get("start"))
+        end_raw = _normalise_date_value(item.get("end_date") or item.get("endDate") or item.get("end"))
+        current = bool(item.get("current")) or end_raw.lower() in {"present", "current", "now"}
+        end_date = "" if current else end_raw
+
+        if not (institution or degree or field):
+            continue
+        dedupe_key = f"{institution.lower()}|{degree.lower()}|{field.lower()}|{start_date.lower()}"
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        output.append(
+            {
+                "id": _clean_text(item.get("id")) or f"edu-{uuid4().hex[:8]}",
+                "institution": institution,
+                "degree": degree,
+                "field": field,
+                "startDate": start_date or None,
+                "endDate": end_date or None,
+                "current": current,
+                "gpa": gpa or None,
+                "location": location or None,
+            }
+        )
+    return output[:10]
+
+
 def _normalise_seniority(value: Any) -> str:
     lowered = _clean_text(value).lower()
     if lowered in {"intern", "entry", "mid", "senior"}:
@@ -1297,10 +1439,12 @@ def extract_resume_data(file_name: str, content_type: str | None, raw: bytes) ->
 
     ai_experiences = _ensure_json_list(ai.get("experiences"))
     ai_projects = _ensure_json_list(ai.get("projects"))
+    ai_education = _ensure_json_list(ai.get("education"))
     ai_certifications = _ensure_json_list(ai.get("certifications"))
     ai_role_interests = _normalise_role_interests(ai.get("role_interests"), ai_generated=True)
     fallback_experiences = _extract_experiences_from_text(text)
     fallback_projects = _extract_projects_from_text(text)
+    fallback_education = _extract_education_from_text(text)
     fallback_certifications = _extract_certifications_from_text(text)
     fallback_role_interests = _infer_role_interests_from_skills(normalised_skills, ai_generated=True)
 
@@ -1317,6 +1461,7 @@ def extract_resume_data(file_name: str, content_type: str | None, raw: bytes) ->
         "skill_years": ai_skill_years if isinstance(ai_skill_years, dict) else {},
         "experiences": ai_experiences or fallback_experiences,
         "projects": ai_projects or fallback_projects,
+        "education": ai_education or fallback_education,
         "certifications": ai_certifications or fallback_certifications,
         "role_interests": ai_role_interests or fallback_role_interests,
         "raw_text": text,
@@ -1335,6 +1480,7 @@ def merge_resume_into_profile(
     existing_skills = _ensure_json_list(existing_profile.get("skills_json"))
     existing_experiences = _normalise_experiences(existing_profile.get("experience_json"))
     existing_projects = _normalise_projects(existing_profile.get("projects_json"))
+    existing_education = _normalise_education(existing_profile.get("education_json"))
     existing_certifications = _normalise_certifications(existing_profile.get("certifications_json"))
     existing_role_interests = _normalise_role_interests(existing_profile.get("role_interests_json"))
 
@@ -1377,6 +1523,7 @@ def merge_resume_into_profile(
 
     incoming_experiences = _normalise_experiences(parsed_resume.get("experiences"))
     incoming_projects = _normalise_projects(parsed_resume.get("projects"))
+    incoming_education = _normalise_education(parsed_resume.get("education"))
     incoming_certifications = _normalise_certifications(parsed_resume.get("certifications"))
     incoming_role_interests = _normalise_role_interests(parsed_resume.get("role_interests"))
 
@@ -1389,6 +1536,11 @@ def merge_resume_into_profile(
         incoming_projects,
         existing_projects,
         key_fields=("name", "description"),
+    )
+    merged_education = _merge_structured_entries(
+        incoming_education,
+        existing_education,
+        key_fields=("institution", "degree", "field", "startDate"),
     )
     merged_certifications = _merge_structured_entries(
         incoming_certifications,
@@ -1405,6 +1557,8 @@ def merge_resume_into_profile(
         updates["experience_json"] = merged_experiences
     if merged_projects:
         updates["projects_json"] = merged_projects
+    if merged_education:
+        updates["education_json"] = merged_education
     if merged_certifications:
         updates["certifications_json"] = merged_certifications
     if merged_role_interests:
@@ -1415,6 +1569,7 @@ def merge_resume_into_profile(
         "skills_extracted": len(parsed_resume.get("skills") or []),
         "experiences_extracted": len(incoming_experiences),
         "projects_extracted": len(incoming_projects),
+        "education_extracted": len(incoming_education),
         "certifications_extracted": len(incoming_certifications),
         "role_interests_extracted": len(incoming_role_interests),
         "used_ai": bool(parsed_resume.get("used_ai")),

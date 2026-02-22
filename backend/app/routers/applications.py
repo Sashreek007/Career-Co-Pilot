@@ -64,6 +64,15 @@ def _row_to_application(row: sqlite3.Row) -> dict[str, Any]:
     return item
 
 
+def _get_active_profile_id(db: sqlite3.Connection) -> str:
+    try:
+        row = db.execute("SELECT active_profile_id FROM settings WHERE id = 1").fetchone()
+        active = str(row[0] or "").strip() if row is not None else ""
+    except sqlite3.Error:
+        active = ""
+    return active or "local"
+
+
 @router.get("/applications")
 def get_applications(db: sqlite3.Connection = Depends(db_conn)):
     rows = db.execute(
@@ -117,12 +126,13 @@ def create_application(payload: CreateApplicationRequest, db: sqlite3.Connection
             raise HTTPException(status_code=404, detail="Resume version not found")
 
     draft_id = f"app-{uuid4().hex[:8]}"
+    profile_id = _get_active_profile_id(db)
     db.execute(
         """
-        INSERT INTO application_drafts (id, job_id, resume_version_id, status)
-        VALUES (?, ?, ?, 'drafted')
+        INSERT INTO application_drafts (id, job_id, resume_version_id, profile_id, status)
+        VALUES (?, ?, ?, ?, 'drafted')
         """,
-        (draft_id, payload.job_id, payload.resume_version_id),
+        (draft_id, payload.job_id, payload.resume_version_id, profile_id),
     )
     db.commit()
     return get_application(draft_id, db)

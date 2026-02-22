@@ -43,20 +43,39 @@ export interface AssistedConfirmResult {
   };
 }
 
+export interface AssistedManualSubmittedResult {
+  status: string;
+  draft?: {
+    id?: string;
+    status?: string;
+    submitted_at?: string | null;
+  };
+}
+
 export interface AssistedProgressEvent {
   at: string;
   level: string;
   message: string;
 }
 
+export interface AssistedScreenshotSnapshot {
+  at: string;
+  path: string;
+}
+
 export interface AssistedProgressResult {
   draft_id: string;
   status: string;
   mode: string;
+  phase?: string;
+  waiting_for_user?: boolean;
+  required_user_action?: string | null;
+  required_user_action_detail?: string | null;
   started_at?: string | null;
   updated_at?: string | null;
   latest_screenshot_path?: string;
   latest_screenshot_url?: string;
+  snapshots?: AssistedScreenshotSnapshot[];
   events: AssistedProgressEvent[];
   error?: string | null;
 }
@@ -210,6 +229,46 @@ export async function runAssistedConfirmSubmit(
   };
 }
 
+export async function markAssistedSubmitted(
+  draftId: string
+): Promise<ApiResponse<AssistedManualSubmittedResult>> {
+  const response = await fetch(`/api/drafts/${encodeURIComponent(draftId)}/mark-submitted`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      confirm_user_assisted: true,
+      acknowledge_platform_terms: true,
+      confirm_final_submit: true,
+    }),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    return {
+      data: { status: 'error' },
+      error: toErrorMessage(payload, 'Failed to mark submitted'),
+      status: response.status,
+    };
+  }
+  const draftPayload =
+    payload.draft && typeof payload.draft === 'object'
+      ? (payload.draft as { id?: unknown; status?: unknown; submitted_at?: unknown })
+      : undefined;
+  return {
+    data: {
+      status: typeof payload.status === 'string' ? payload.status : 'submitted_manual',
+      draft: draftPayload
+        ? {
+            id: typeof draftPayload.id === 'string' ? draftPayload.id : undefined,
+            status: typeof draftPayload.status === 'string' ? draftPayload.status : undefined,
+            submitted_at:
+              typeof draftPayload.submitted_at === 'string' ? draftPayload.submitted_at : null,
+          }
+        : undefined,
+    },
+    status: response.status,
+  };
+}
+
 export async function getAssistedProgress(
   draftId: string
 ): Promise<ApiResponse<AssistedProgressResult>> {
@@ -228,6 +287,7 @@ export async function getAssistedProgress(
     };
   }
   const rawEvents: unknown[] = Array.isArray(payload.events) ? payload.events : [];
+  const rawSnapshots: unknown[] = Array.isArray(payload.snapshots) ? payload.snapshots : [];
   const events = rawEvents
     .map((item: unknown) =>
       item && typeof item === 'object'
@@ -244,18 +304,40 @@ export async function getAssistedProgress(
     .filter((item: AssistedProgressEvent | null): item is AssistedProgressEvent =>
       Boolean(item && item.message)
     );
+  const snapshots = rawSnapshots
+    .map((item: unknown) =>
+      item && typeof item === 'object'
+        ? (() => {
+            const row = item as Record<string, unknown>;
+            return {
+              at: typeof row.at === 'string' ? row.at : '',
+              path: typeof row.path === 'string' ? row.path : '',
+            } as AssistedScreenshotSnapshot;
+          })()
+        : null
+    )
+    .filter((item: AssistedScreenshotSnapshot | null): item is AssistedScreenshotSnapshot =>
+      Boolean(item && item.path)
+    );
 
   return {
     data: {
       draft_id: typeof payload.draft_id === 'string' ? payload.draft_id : draftId,
       status: typeof payload.status === 'string' ? payload.status : 'idle',
       mode: typeof payload.mode === 'string' ? payload.mode : 'unknown',
+      phase: typeof payload.phase === 'string' ? payload.phase : undefined,
+      waiting_for_user: Boolean(payload.waiting_for_user ?? false),
+      required_user_action:
+        typeof payload.required_user_action === 'string' ? payload.required_user_action : null,
+      required_user_action_detail:
+        typeof payload.required_user_action_detail === 'string' ? payload.required_user_action_detail : null,
       started_at: typeof payload.started_at === 'string' ? payload.started_at : null,
       updated_at: typeof payload.updated_at === 'string' ? payload.updated_at : null,
       latest_screenshot_path:
         typeof payload.latest_screenshot_path === 'string' ? payload.latest_screenshot_path : undefined,
       latest_screenshot_url:
         typeof payload.latest_screenshot_url === 'string' ? payload.latest_screenshot_url : undefined,
+      snapshots,
       events,
       error: typeof payload.error === 'string' ? payload.error : null,
     },

@@ -23,13 +23,14 @@ import {
   postBrowserAssistedDiscoveryMessage,
   postChatMessage,
   prepareDraft,
+  markAssistedSubmitted,
   startBrowserAssistedDiscoverySession,
   runAssistedConfirmSubmit,
   runAssistedFill,
 } from '@career-copilot/api';
 
 type LocationFilter = 'canada' | 'us' | 'remote' | 'all';
-type ActivityTab = 'browser' | 'agent' | 'chat';
+type ActivityTab = 'agent' | 'chat';
 type DiscoveryTab = 'plan' | 'agent' | 'chat';
 
 const CANADA_HINTS = [
@@ -109,12 +110,6 @@ function matchesLocationFilter(job: Job, filter: LocationFilter): boolean {
   return true;
 }
 
-function withCacheBust(url: string | undefined, token?: string | null): string | undefined {
-  if (!url) return undefined;
-  const sep = url.includes('?') ? '&' : '?';
-  return `${url}${sep}t=${encodeURIComponent(token ?? Date.now().toString())}`;
-}
-
 function pickLocationHint(filter: LocationFilter, profile: UserProfile | null): string {
   if (filter === 'canada') return 'canada';
   if (filter === 'us') return 'united states';
@@ -138,6 +133,19 @@ function buildAutoDiscoveryPlan(filter: LocationFilter, profile: UserProfile | n
     query,
     sources: ['linkedin'],
   };
+}
+
+function prettyPhase(phase?: string): string {
+  const value = String(phase ?? '').trim().toLowerCase();
+  if (!value) return 'running';
+  if (value === 'linkedin_handoff') return 'linkedin handoff';
+  return value.replace(/_/g, ' ');
+}
+
+function prettyUserAction(action?: string | null): string {
+  const value = String(action ?? '').trim().toLowerCase();
+  if (!value || value === 'none') return '';
+  return value.replace(/_/g, ' ');
 }
 
 function loadPersistedLocationFilter(): LocationFilter {
@@ -178,8 +186,8 @@ export function JobFeedPage() {
   const [runningDraftId, setRunningDraftId] = useState<string | null>(null);
   const [runningJobUrl, setRunningJobUrl] = useState<string | null>(null);
   const [runningProgress, setRunningProgress] = useState<AssistedProgressResult | null>(null);
-  const [runningTab, setRunningTab] = useState<ActivityTab>('browser');
-  const [reviewTab, setReviewTab] = useState<ActivityTab>('browser');
+  const [runningTab, setRunningTab] = useState<ActivityTab>('agent');
+  const [reviewTab, setReviewTab] = useState<ActivityTab>('agent');
   const progressTimerRef = useRef<number | null>(null);
   const discoveryTimerRef = useRef<number | null>(null);
   const noticeTimerRef = useRef<number | null>(null);
@@ -499,7 +507,7 @@ export function JobFeedPage() {
   };
 
   const handleSendChat = async () => {
-    const draftId = runningDraftId;
+    const draftId = runningDraftId ?? assistedReview?.draftId ?? null;
     const text = chatInput.trim();
     if (!draftId || !text || isSendingChat) return;
     setIsSendingChat(true);
@@ -577,7 +585,7 @@ export function JobFeedPage() {
       return;
     }
 
-    setRunningTab('browser');
+    setRunningTab('agent');
     setRunningProgress(null);
     setRunningDraftId(prepared.data.id);
     setRunningJobUrl(targetJob.sourceUrl || null);
@@ -605,7 +613,7 @@ export function JobFeedPage() {
       return;
     }
 
-    setReviewTab('browser');
+    setReviewTab('agent');
     setAssistedReview({
       draftId: prepared.data.id,
       screenshotUrl: fillResult.data.screenshot_url ?? latestProgress?.latest_screenshot_url,
@@ -618,10 +626,18 @@ export function JobFeedPage() {
 
   const handleFinalSubmit = async () => {
     if (!assistedReview || isSubmittingFinal) return;
+    if (
+      useVisibleBrowser &&
+      !window.confirm('Confirm you already clicked submit in the browser page. Continue?')
+    ) {
+      return;
+    }
     setIsSubmittingFinal(true);
-    const submitted = await runAssistedConfirmSubmit(assistedReview.draftId, {
-      useVisibleBrowser,
-    });
+    const submitted = useVisibleBrowser
+      ? await markAssistedSubmitted(assistedReview.draftId)
+      : await runAssistedConfirmSubmit(assistedReview.draftId, {
+          useVisibleBrowser,
+        });
     setIsSubmittingFinal(false);
     if (submitted.error) {
       pushNotice(submitted.error, 'error');
@@ -636,6 +652,18 @@ export function JobFeedPage() {
     if (!assistedReview) return;
     pushNotice(`Draft ${assistedReview.draftId} is approved and ready for final submit later.`, 'info');
     setAssistedReview(null);
+  };
+
+  const handleEndChat = () => {
+    stopProgressPolling();
+    setIsRunningFill(false);
+    setRunningDraftId(null);
+    setRunningJobUrl(null);
+    setRunningProgress(null);
+    setAssistedReview(null);
+    setChatInput('');
+    setChatMessages([]);
+    pushNotice('Chat closed.', 'info');
   };
 
   const handlePrepareApplication = (jobId: string) => {
@@ -756,11 +784,6 @@ export function JobFeedPage() {
     pushNotice('Stop requested. The agent will halt after the current browser step.', 'info');
   };
 
-  const runningScreenshotUrl = withCacheBust(
-    runningProgress?.latest_screenshot_url,
-    runningProgress?.updated_at
-  );
-  const reviewScreenshotUrl = withCacheBust(assistedReview?.screenshotUrl, assistedReview?.updatedAt);
   const discoveryElapsedSeconds = discoveryProgress?.elapsed_seconds ?? 0;
   const discoveryEstimatedSeconds = discoveryProgress?.estimated_duration_seconds ?? 0;
   const discoveryRuntimeLabel =
@@ -1351,16 +1374,6 @@ export function JobFeedPage() {
 
             <div className="flex items-center gap-2 border-b border-zinc-800 px-5 py-3">
               <button
-                onClick={() => setRunningTab('browser')}
-                className={`rounded-md px-3 py-1.5 text-xs font-medium ${
-                  runningTab === 'browser'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
-                }`}
-              >
-                Browser View
-              </button>
-              <button
                 onClick={() => setRunningTab('agent')}
                 className={`rounded-md px-3 py-1.5 text-xs font-medium ${
                   runningTab === 'agent'
@@ -1386,34 +1399,26 @@ export function JobFeedPage() {
                 )}
               </button>
               <span className="ml-auto text-[11px] text-zinc-500">
-                {runningProgress?.status ?? 'running'}
+                {runningProgress
+                  ? `${runningProgress.status} • ${prettyPhase(runningProgress.phase)}`
+                  : 'running'}
               </span>
             </div>
 
             <div className="px-5 py-4">
-              {runningTab === 'browser' ? (
-                <div className="space-y-3">
-                  {runningJobUrl && (
-                    <a
-                      href={runningJobUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center rounded-md bg-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-100 hover:bg-zinc-600"
-                    >
-                      Open Job Page
-                    </a>
-                  )}
-                  {runningScreenshotUrl ? (
-                    <div className="max-h-[52vh] overflow-auto rounded-lg border border-zinc-800 bg-zinc-950">
-                      <img src={runningScreenshotUrl} alt="Live browser progress" className="block h-auto w-full" />
-                    </div>
-                  ) : (
-                    <div className="rounded-md border border-zinc-700 bg-zinc-950 px-3 py-3 text-xs text-zinc-400">
-                      Waiting for first browser snapshot...
-                    </div>
+              {runningProgress?.waiting_for_user && (
+                <div className="mb-3 rounded-md border border-amber-700/50 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+                  <p className="font-medium">
+                    User action required{prettyUserAction(runningProgress.required_user_action)
+                      ? `: ${prettyUserAction(runningProgress.required_user_action)}`
+                      : ''}
+                  </p>
+                  {runningProgress.required_user_action_detail && (
+                    <p className="mt-1 text-amber-300/90">{runningProgress.required_user_action_detail}</p>
                   )}
                 </div>
-              ) : runningTab === 'agent' ? (
+              )}
+              {runningTab === 'agent' ? (
                 <div className="max-h-[52vh] overflow-auto rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2">
                   {(runningProgress?.events ?? []).length === 0 ? (
                     <p className="py-3 text-xs text-zinc-500">Waiting for agent events...</p>
@@ -1494,6 +1499,18 @@ export function JobFeedPage() {
                 </div>
               )}
             </div>
+            <div className="flex items-center justify-end gap-2 border-t border-zinc-800 px-5 py-4">
+              {runningJobUrl && (
+                <a
+                  href={runningJobUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-md bg-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-100 hover:bg-zinc-600"
+                >
+                  Open Job Page
+                </a>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -1504,21 +1521,13 @@ export function JobFeedPage() {
             <div className="border-b border-zinc-800 px-5 py-4">
               <h3 className="text-base font-semibold text-zinc-100">Review Browser Activity</h3>
               <p className="mt-1 text-sm text-zinc-400">
-                AI-assisted fill completed. Validate the result, then trigger final submit.
+                {useVisibleBrowser
+                  ? 'AI-assisted fill completed. Submit in your browser, then confirm here.'
+                  : 'AI-assisted fill completed. Validate the result, then trigger final submit.'}
               </p>
             </div>
 
             <div className="flex items-center gap-2 border-b border-zinc-800 px-5 py-3">
-              <button
-                onClick={() => setReviewTab('browser')}
-                className={`rounded-md px-3 py-1.5 text-xs font-medium ${
-                  reviewTab === 'browser'
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-zinc-800 text-zinc-300 hover:bg-zinc-700'
-                }`}
-              >
-                Browser View
-              </button>
               <button
                 onClick={() => setReviewTab('agent')}
                 className={`rounded-md px-3 py-1.5 text-xs font-medium ${
@@ -1547,36 +1556,7 @@ export function JobFeedPage() {
             </div>
 
             <div className="space-y-3 px-5 py-4">
-              {reviewTab === 'browser' ? (
-                assistedReview.screenshotUrl ? (
-                  <>
-                    <a
-                      href={assistedReview.screenshotUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex items-center rounded-md bg-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-100 hover:bg-zinc-600"
-                    >
-                      Open Full Browser Capture
-                    </a>
-                    <div className="max-h-[52vh] overflow-auto rounded-lg border border-zinc-800 bg-zinc-950">
-                      <img
-                        src={reviewScreenshotUrl}
-                        alt="AI-assisted browser capture"
-                        className="block h-auto w-full"
-                      />
-                    </div>
-                  </>
-                ) : (
-                  <div className="rounded-md border border-amber-700/50 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
-                    Screenshot was not returned by backend. You can still finalize manually.
-                    {assistedReview.screenshotPath && (
-                      <div className="mt-2 font-mono text-[11px] text-amber-300">
-                        {assistedReview.screenshotPath}
-                      </div>
-                    )}
-                  </div>
-                )
-              ) : reviewTab === 'agent' ? (
+              {reviewTab === 'agent' ? (
                 <div className="max-h-[52vh] overflow-auto rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2">
                   {assistedReview.events.length === 0 ? (
                     <p className="py-3 text-xs text-zinc-500">No agent events captured.</p>
@@ -1594,53 +1574,81 @@ export function JobFeedPage() {
                   )}
                 </div>
               ) : (
-                /* Chat history (read-only in review — fill is done) */
-                <div className="max-h-[52vh] overflow-auto rounded-lg border border-zinc-800 bg-zinc-950 p-3 space-y-3">
-                  {chatMessages.length === 0 ? (
-                    <p className="py-4 text-center text-xs text-zinc-500">No chat messages from this session.</p>
-                  ) : (
-                    chatMessages.map((msg, idx) => (
-                      <div
-                        key={`${msg.at}-${idx}`}
-                        className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                      >
+                <div className="flex flex-col" style={{ height: '52vh' }}>
+                  <div className="flex-1 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-950 p-3 space-y-3">
+                    {chatMessages.length === 0 ? (
+                      <p className="py-4 text-center text-xs text-zinc-500">No chat messages from this session.</p>
+                    ) : (
+                      chatMessages.map((msg, idx) => (
                         <div
-                          className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed ${
-                            msg.role === 'user'
-                              ? 'rounded-br-sm bg-blue-600 text-white'
-                              : 'rounded-bl-sm border border-zinc-700 bg-zinc-800 text-zinc-100'
-                          }`}
+                          key={`${msg.at}-${idx}`}
+                          className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
                         >
-                          {msg.role === 'ai' && (
-                            <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-zinc-400">
-                              AI Agent
+                          <div
+                            className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed ${
+                              msg.role === 'user'
+                                ? 'rounded-br-sm bg-blue-600 text-white'
+                                : 'rounded-bl-sm border border-zinc-700 bg-zinc-800 text-zinc-100'
+                            }`}
+                          >
+                            {msg.role === 'ai' && (
+                              <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-zinc-400">
+                                AI Agent
+                              </p>
+                            )}
+                            <p className="whitespace-pre-wrap">{msg.text}</p>
+                            <p className={`mt-1 text-[10px] ${msg.role === 'user' ? 'text-blue-200' : 'text-zinc-500'}`}>
+                              {new Date(msg.at).toLocaleTimeString()}
                             </p>
-                          )}
-                          <p className="whitespace-pre-wrap">{msg.text}</p>
-                          <p className={`mt-1 text-[10px] ${msg.role === 'user' ? 'text-blue-200' : 'text-zinc-500'}`}>
-                            {new Date(msg.at).toLocaleTimeString()}
-                          </p>
+                          </div>
                         </div>
-                      </div>
-                    ))
-                  )}
+                      ))
+                    )}
+                    <div ref={chatEndRef} />
+                  </div>
+                  <div className="mt-2 flex items-end gap-2">
+                    <textarea
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          void handleSendChat();
+                        }
+                      }}
+                      placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+                      rows={2}
+                      className="flex-1 resize-none rounded-xl border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                    <button
+                      onClick={() => void handleSendChat()}
+                      disabled={isSendingChat || !chatInput.trim()}
+                      className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {isSendingChat ? '…' : 'Send'}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
 
             <div className="flex items-center justify-end gap-2 border-t border-zinc-800 px-5 py-4">
               <button
-                onClick={handleReviewLater}
+                onClick={handleEndChat}
                 className="rounded-md bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-700"
               >
-                Review Later
+                End Chat
               </button>
               <button
                 onClick={() => void handleFinalSubmit()}
                 disabled={isSubmittingFinal}
                 className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
               >
-                {isSubmittingFinal ? 'Submitting...' : 'Final Submit Now'}
+                {isSubmittingFinal
+                  ? 'Submitting...'
+                  : useVisibleBrowser
+                    ? 'I Submitted in Browser'
+                    : 'Final Submit Now'}
               </button>
             </div>
           </div>

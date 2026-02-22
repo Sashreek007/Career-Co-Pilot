@@ -197,7 +197,11 @@ def _fallback_required_essay_answer(
 
 
 def generate_draft_answers(
-    job: dict[str, Any], user_profile: dict[str, Any], form_fields: list[dict[str, Any]]
+    job: dict[str, Any],
+    user_profile: dict[str, Any],
+    form_fields: list[dict[str, Any]],
+    *,
+    resume_upload_override: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Populate fields conservatively. Unknown values are explicit review placeholders."""
     answers: dict[str, Any] = {}
@@ -224,7 +228,14 @@ def generate_draft_answers(
         field_type = _as_lower(field.get("type"))
 
         if field_type == "file":
-            if resume_file_path and Path(resume_file_path).exists():
+            override_path = _clean_text((resume_upload_override or {}).get("resume_file_path"))
+            override_name = _clean_text((resume_upload_override or {}).get("resume_file_name"))
+            if override_path and Path(override_path).exists():
+                answers[label] = {
+                    "resume_file_path": override_path,
+                    "resume_file_name": override_name or Path(override_path).name,
+                }
+            elif resume_file_path and Path(resume_file_path).exists():
                 answers[label] = {
                     "resume_file_path": resume_file_path,
                     "resume_file_name": resume_file_name or Path(resume_file_path).name,

@@ -37,6 +37,23 @@ export function ResumeStudioPage() {
   const compare = visibleVersions.find((v) => v.id === compareId) ?? null;
   const isComparing = !!(selected && compare);
 
+  const handleCompareLeftSelect = (id: string) => {
+    selectVersion(id);
+    if (id === compareId) {
+      const alternate = visibleVersions.find((v) => v.id !== id);
+      setCompareId(alternate?.id ?? null);
+    }
+  };
+
+  const handleCompareRightSelect = (id: string) => {
+    if (id === selectedId) {
+      const alternate = visibleVersions.find((v) => v.id !== id);
+      setCompareId(alternate?.id ?? null);
+      return;
+    }
+    setCompareId(id);
+  };
+
   useEffect(() => {
     if (incomingJobId && incomingJobId !== activeJobId) {
       generateForJob(incomingJobId);
@@ -133,7 +150,13 @@ export function ResumeStudioPage() {
             }
             right={
               isComparing && compare ? (
-                <DiffView versionA={selected!} versionB={compare} />
+                <DiffView
+                  versions={visibleVersions}
+                  versionA={selected!}
+                  versionB={compare}
+                  onSelectA={handleCompareLeftSelect}
+                  onSelectB={handleCompareRightSelect}
+                />
               ) : selected ? (
                 <ResumePreview
                   version={selected}

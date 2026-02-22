@@ -41,6 +41,18 @@ export interface Certification {
   url?: string;
 }
 
+export interface Education {
+  id: string;
+  institution: string;
+  degree: string;
+  field?: string;
+  startDate?: string;
+  endDate?: string;
+  current?: boolean;
+  gpa?: string;
+  location?: string;
+}
+
 export interface RoleInterest {
   id: string;
   title: string;
@@ -62,6 +74,7 @@ export interface UserProfile {
   skills: Skill[];
   projects: Project[];
   experiences: Experience[];
+  education: Education[];
   certifications: Certification[];
   roleInterests: RoleInterest[];
   resumeFileName?: string;
