@@ -1,6 +1,7 @@
 import { useEffect, useState, type ChangeEvent } from 'react';
 import type {
   Certification,
+  Education,
   Experience,
   Project,
   RoleInterest,
@@ -12,6 +13,7 @@ import { useProfileStore } from '../state/useProfileStore';
 import { SkillsSection } from './SkillsSection';
 import { ProjectsSection } from './ProjectsSection';
 import { ExperienceSection } from './ExperienceSection';
+import { EducationSection } from './EducationSection';
 import { CertificationsSection } from './CertificationsSection';
 import { RoleInterestsSection } from './RoleInterestsSection';
 
@@ -26,6 +28,7 @@ interface ProfileEditForm {
   roleInterests: RoleInterest[];
   skills: Skill[];
   experiences: Experience[];
+  education: Education[];
   projects: Project[];
   certifications: Certification[];
 }
@@ -62,6 +65,7 @@ function toForm(profile: UserProfile): ProfileEditForm {
     roleInterests: profile.roleInterests.map((item) => ({ ...item, domains: [...item.domains], locations: [...item.locations] })),
     skills: profile.skills.map((item) => ({ ...item, tags: [...item.tags] })),
     experiences: profile.experiences.map((item) => ({ ...item, skills: [...item.skills], bullets: [...item.bullets] })),
+    education: profile.education.map((item) => ({ ...item })),
     projects: profile.projects.map((item) => ({ ...item, techStack: [...item.techStack], skills: [...item.skills] })),
     certifications: profile.certifications.map((item) => ({ ...item })),
   };
@@ -99,6 +103,7 @@ export function ProfilePage() {
     selectProfile,
     createBlankProfile,
     renameSelectedProfile,
+    deleteSelectedProfile,
     saveProfile,
     uploadResume,
     recommendRoles,
@@ -190,6 +195,19 @@ export function ProfilePage() {
           endDate: item.current ? undefined : item.endDate?.trim() || undefined,
         }))
         .filter((item) => item.company || item.role),
+      education: form.education
+        .map((item) => ({
+          ...item,
+          institution: item.institution.trim(),
+          degree: item.degree.trim(),
+          field: item.field?.trim() || undefined,
+          startDate: item.startDate?.trim() || undefined,
+          endDate: item.current ? undefined : item.endDate?.trim() || undefined,
+          current: Boolean(item.current),
+          gpa: item.gpa?.trim() || undefined,
+          location: item.location?.trim() || undefined,
+        }))
+        .filter((item) => item.institution || item.degree),
       projects: form.projects
         .map((item) => ({
           ...item,
@@ -235,7 +253,7 @@ export function ProfilePage() {
       const result = await uploadResume(file, { createNewProfile: true });
       const extracted = result.extracted;
       setResumeStatus(
-        `${result.createdNewProfile ? 'Created new profile. ' : ''}Resume parsed (${extracted.file_name}): ${extracted.skills_extracted} skills, ${extracted.experiences_extracted} experiences, ${extracted.projects_extracted} projects, ${extracted.role_interests_extracted ?? 0} target-role recommendations${
+        `${result.createdNewProfile ? 'Created new profile. ' : ''}Resume parsed (${extracted.file_name}): ${extracted.skills_extracted} skills, ${extracted.experiences_extracted} experiences, ${extracted.projects_extracted} projects, ${extracted.education_extracted ?? 0} education entries, ${extracted.role_interests_extracted ?? 0} target-role recommendations${
           extracted.used_ai ? ' with AI assistance' : ''
         }.`
       );
@@ -262,6 +280,24 @@ export function ProfilePage() {
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to generate role recommendations.';
       setRoleRecommendationStatus(message);
+    }
+  };
+
+  const handleDeleteProfile = async () => {
+    if (profiles.length <= 1) {
+      window.alert('Cannot delete the last profile.');
+      return;
+    }
+    const confirmed = window.confirm(`Delete profile "${profile.name}"? This cannot be undone.`);
+    if (!confirmed) return;
+    try {
+      await deleteSelectedProfile();
+      setIsEditing(false);
+      setResumeStatus('');
+      setRoleRecommendationStatus('');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to delete profile.';
+      window.alert(message);
     }
   };
 
@@ -343,6 +379,13 @@ export function ProfilePage() {
               className="rounded-md border border-zinc-700 bg-zinc-800 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-zinc-700 transition-colors"
             >
               New Profile
+            </button>
+            <button
+              onClick={() => void handleDeleteProfile()}
+              disabled={profiles.length <= 1}
+              className="rounded-md border border-red-500/40 bg-red-900/30 px-2.5 py-1.5 text-xs text-red-200 hover:bg-red-900/50 transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Delete Profile
             </button>
           </div>
           {!isEditing && (
@@ -783,6 +826,169 @@ export function ProfilePage() {
 
             <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 space-y-3">
               <div className="flex items-center justify-between">
+                <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Education</h2>
+                <button
+                  onClick={() =>
+                    setForm((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            education: [
+                              ...prev.education,
+                              {
+                                id: makeId('edu'),
+                                institution: '',
+                                degree: '',
+                                field: '',
+                                startDate: '',
+                                endDate: '',
+                                current: false,
+                                gpa: '',
+                                location: '',
+                              },
+                            ],
+                          }
+                        : prev
+                    )
+                  }
+                  className="text-xs rounded-md border border-zinc-700 bg-zinc-800 px-2 py-1 text-zinc-300 hover:bg-zinc-700"
+                >
+                  Add Education
+                </button>
+              </div>
+              {form.education.map((item, index) => (
+                <div key={item.id} className="rounded-lg border border-zinc-800 bg-zinc-950 p-3 space-y-2">
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-2">
+                    <input
+                      className={inputCls}
+                      placeholder="Institution"
+                      value={item.institution}
+                      onChange={(e) =>
+                        setForm((prev) => {
+                          if (!prev) return prev;
+                          const next = [...prev.education];
+                          next[index] = { ...next[index], institution: e.target.value };
+                          return { ...prev, education: next };
+                        })
+                      }
+                    />
+                    <input
+                      className={inputCls}
+                      placeholder="Degree"
+                      value={item.degree}
+                      onChange={(e) =>
+                        setForm((prev) => {
+                          if (!prev) return prev;
+                          const next = [...prev.education];
+                          next[index] = { ...next[index], degree: e.target.value };
+                          return { ...prev, education: next };
+                        })
+                      }
+                    />
+                    <input
+                      className={inputCls}
+                      placeholder="Field of study"
+                      value={item.field ?? ''}
+                      onChange={(e) =>
+                        setForm((prev) => {
+                          if (!prev) return prev;
+                          const next = [...prev.education];
+                          next[index] = { ...next[index], field: e.target.value };
+                          return { ...prev, education: next };
+                        })
+                      }
+                    />
+                    <input
+                      className={inputCls}
+                      placeholder="Location"
+                      value={item.location ?? ''}
+                      onChange={(e) =>
+                        setForm((prev) => {
+                          if (!prev) return prev;
+                          const next = [...prev.education];
+                          next[index] = { ...next[index], location: e.target.value };
+                          return { ...prev, education: next };
+                        })
+                      }
+                    />
+                    <input
+                      className={inputCls}
+                      placeholder="Start date (YYYY-MM)"
+                      value={item.startDate ?? ''}
+                      onChange={(e) =>
+                        setForm((prev) => {
+                          if (!prev) return prev;
+                          const next = [...prev.education];
+                          next[index] = { ...next[index], startDate: e.target.value };
+                          return { ...prev, education: next };
+                        })
+                      }
+                    />
+                    <input
+                      className={inputCls}
+                      placeholder="End date (YYYY-MM)"
+                      value={item.endDate ?? ''}
+                      disabled={Boolean(item.current)}
+                      onChange={(e) =>
+                        setForm((prev) => {
+                          if (!prev) return prev;
+                          const next = [...prev.education];
+                          next[index] = { ...next[index], endDate: e.target.value };
+                          return { ...prev, education: next };
+                        })
+                      }
+                    />
+                    <input
+                      className={inputCls}
+                      placeholder="GPA (optional)"
+                      value={item.gpa ?? ''}
+                      onChange={(e) =>
+                        setForm((prev) => {
+                          if (!prev) return prev;
+                          const next = [...prev.education];
+                          next[index] = { ...next[index], gpa: e.target.value };
+                          return { ...prev, education: next };
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs text-zinc-400 flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(item.current)}
+                        onChange={(e) =>
+                          setForm((prev) => {
+                            if (!prev) return prev;
+                            const next = [...prev.education];
+                            next[index] = {
+                              ...next[index],
+                              current: e.target.checked,
+                              endDate: e.target.checked ? undefined : next[index].endDate,
+                            };
+                            return { ...prev, education: next };
+                          })
+                        }
+                      />
+                      Currently studying
+                    </label>
+                    <button
+                      onClick={() =>
+                        setForm((prev) =>
+                          prev ? { ...prev, education: prev.education.filter((_, i) => i !== index) } : prev
+                        )
+                      }
+                      className="text-xs rounded-md border border-red-500/30 bg-red-500/10 px-2 py-1 text-red-300 hover:bg-red-500/20"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </section>
+
+            <section className="rounded-xl border border-zinc-800 bg-zinc-900 p-4 space-y-3">
+              <div className="flex items-center justify-between">
                 <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Projects</h2>
                 <button
                   onClick={() =>
@@ -1044,6 +1250,7 @@ export function ProfilePage() {
             />
             <SkillsSection skills={profile.skills} />
             <ExperienceSection experiences={profile.experiences} />
+            <EducationSection education={profile.education} />
             <ProjectsSection projects={profile.projects} />
             <CertificationsSection certifications={profile.certifications} />
           </>

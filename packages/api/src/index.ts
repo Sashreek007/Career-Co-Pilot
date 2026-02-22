@@ -53,12 +53,19 @@ export {
   createProfile,
   activateProfile,
   renameProfile,
+  deleteProfile,
   getProfile,
   updateProfile,
   uploadProfileResume,
   recommendProfileRoles,
 } from './profile';
-export type { ProfileSummary, ResumeUploadResult, ResumeUploadExtraction, RoleRecommendationResult } from './profile';
+export type {
+  ProfileSummary,
+  ResumeUploadResult,
+  ResumeUploadExtraction,
+  RoleRecommendationResult,
+  DeleteProfileResult,
+} from './profile';
 export { getInsights, refreshInsights } from './insights';
 export { getSettings, updateSettings } from './settings';
 export type { AppSettings } from './settings';

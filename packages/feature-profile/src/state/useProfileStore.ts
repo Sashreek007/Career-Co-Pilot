@@ -3,6 +3,7 @@ import { persist } from 'zustand/middleware';
 import {
   activateProfile,
   createProfile,
+  deleteProfile,
   getProfile,
   getProfiles,
   recommendProfileRoles,
@@ -26,6 +27,7 @@ interface ProfileStore {
   selectProfile: (profileId: string) => Promise<void>;
   createBlankProfile: (name?: string) => Promise<void>;
   renameSelectedProfile: (name: string) => Promise<void>;
+  deleteSelectedProfile: () => Promise<void>;
   saveProfile: (partial: Partial<UserProfile>) => Promise<void>;
   uploadResume: (file: File, options?: { createNewProfile?: boolean }) => Promise<ResumeUploadResult>;
   recommendRoles: () => Promise<RoleRecommendationResult>;
@@ -97,6 +99,19 @@ export const useProfileStore = create<ProfileStore>()(
         const updatedProfile = response.data;
         await get().fetchProfiles();
         set({ profile: updatedProfile, selectedProfileId: updatedProfile.id });
+      },
+      deleteSelectedProfile: async () => {
+        const selected = get().selectedProfileId;
+        if (!selected) return;
+        const response = await deleteProfile(selected);
+        const nextId = response.data.activeProfileId || undefined;
+        await get().fetchProfiles();
+        if (!nextId) {
+          set({ profile: null, selectedProfileId: null });
+          return;
+        }
+        const profileResponse = await getProfile(nextId);
+        set({ profile: profileResponse.data, selectedProfileId: profileResponse.data.id });
       },
       saveProfile: async (partial) => {
         const selected = get().selectedProfileId ?? undefined;
