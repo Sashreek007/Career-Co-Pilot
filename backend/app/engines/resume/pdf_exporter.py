@@ -801,31 +801,31 @@ def _render_jakes_template(payload: dict[str, Any]) -> str:
 \renewcommand{{\footrulewidth}}{{0pt}}
 
 \urlstyle{{same}}
-\raggedbottom
+\flushbottom
 \raggedright
 \setlength{{\tabcolsep}}{{0in}}
 
-\titleformat{{\section}}{{\vspace{{-4pt}}\scshape\raggedright\large}}{{}}{{0em}}{{}}[\color{{black}}\titlerule \vspace{{-5pt}}]
+\titleformat{{\section}}{{\vspace{{-2pt}}\scshape\raggedright\large}}{{}}{{0em}}{{}}[\color{{black}}\titlerule \vspace{{-2pt}}]
 \ifxetex\else\pdfgentounicode=1\fi
 
-\newcommand{{\resumeItem}}[1]{{\item\small{{{{#1 \vspace{{-2pt}}}}}}}}
+\newcommand{{\resumeItem}}[1]{{\item\small{{#1}}}}
 \newcommand{{\resumeSubheading}}[4]{{
   \vspace{{-2pt}}\item
     \begin{{tabular*}}{{0.97\textwidth}}[t]{{l@{{\extracolsep{{\fill}}}}r}}
       \textbf{{#1}} & #2 \\
       \textit{{\small#3}} & \textit{{\small #4}} \\
-    \end{{tabular*}}\vspace{{-7pt}}
+    \end{{tabular*}}\vspace{{-3pt}}
 }}
 \newcommand{{\resumeProjectHeading}}[2]{{
     \item
     \begin{{tabular*}}{{0.97\textwidth}}{{l@{{\extracolsep{{\fill}}}}r}}
       \small#1 & #2 \\
-    \end{{tabular*}}\vspace{{-7pt}}
+    \end{{tabular*}}\vspace{{-3pt}}
 }}
 \newcommand{{\resumeSubHeadingListStart}}{{\begin{{itemize}}[leftmargin=0.15in, label={{}}]}}
 \newcommand{{\resumeSubHeadingListEnd}}{{\end{{itemize}}}}
 \newcommand{{\resumeItemListStart}}{{\begin{{itemize}}}}
-\newcommand{{\resumeItemListEnd}}{{\end{{itemize}}\vspace{{-5pt}}}}
+\newcommand{{\resumeItemListEnd}}{{\end{{itemize}}\vspace{{-1pt}}}}
 
 \begin{{document}}
 
