@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import type { Job, UserProfile } from '@career-copilot/core';
 import { SplitPane, PageHeader } from '@career-copilot/ui';
 import { useJobsStore } from '../state/useJobsStore';
@@ -162,6 +163,7 @@ function loadPersistedDiscoveryRunId(): string {
 }
 
 export function JobFeedPage() {
+  const navigate = useNavigate();
   const { jobs, selectedJobId, isLoading, lastFetchedAt, fetchJobs, selectJob, markInterested } = useJobsStore();
   const didBootstrapFetchRef = useRef(false);
   const [locationFilter, setLocationFilter] = useState<LocationFilter>(() => loadPersistedLocationFilter());
@@ -491,7 +493,7 @@ export function JobFeedPage() {
   };
 
   const handlePrepareResume = (jobId: string) => {
-    console.log('[stub] Prepare resume for job', jobId);
+    navigate(`/resume-studio?job_id=${encodeURIComponent(jobId)}`);
   };
 
   const runAssistedApplicationFlow = async (jobId: string) => {

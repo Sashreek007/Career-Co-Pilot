@@ -16,6 +16,8 @@ export interface ResumeVersion {
   jobId?: string;
   jobTitle?: string;
   company?: string;
+  templateId?: string;
+  content?: Record<string, unknown>;
   fragments: ResumeFragment[];
   strengthScore: number; // 0-100
   keywordCoverage: number;

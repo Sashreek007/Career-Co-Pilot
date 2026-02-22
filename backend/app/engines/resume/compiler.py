@@ -266,11 +266,7 @@ async def compile_resume_all(
     rewritten_experience: list[dict[str, Any]] = []
     for frag in fragments.get("experience", []):
         original = frag.get("text", "")
-        rewritten = await rewrite_bullet(
-            original, required_skills, domain,
-            rules_context=RULES_MD,
-            tailoring_context=TAILORING_MD,
-        )
+        rewritten = await rewrite_bullet(original, required_skills, domain)
         rewritten_experience.append({**frag, "rewritten_text": rewritten})
 
     # 6. Collect all skills for strength scoring

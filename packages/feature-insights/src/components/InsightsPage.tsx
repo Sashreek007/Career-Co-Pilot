@@ -6,7 +6,7 @@ import {
 } from 'recharts';
 import { useInsightsStore } from '../state/useInsightsStore';
 import { MetricCard } from './MetricCard';
-import { Send, TrendingUp, MessageSquare, FileText, AlertCircle, BarChart3 } from 'lucide-react';
+import { Send, TrendingUp, MessageSquare, FileText, AlertCircle, BarChart3, Brain } from 'lucide-react';
 
 const TOOLTIP_STYLE = {
   contentStyle: { background: '#18181b', border: '1px solid #27272a', borderRadius: '8px', fontSize: '12px' },
@@ -64,12 +64,19 @@ export function InsightsPage() {
         />
 
         {/* Metric Cards */}
-        <div className="grid grid-cols-2 xl:grid-cols-5 gap-3">
+        <div className="grid grid-cols-2 xl:grid-cols-6 gap-3">
           <MetricCard label="Applications" value={metrics.totalApplications} icon={<Send className="w-5 h-5" />} trend="flat" />
           <MetricCard label="Response Rate" value={`${metrics.responseRate}%`} icon={<TrendingUp className="w-5 h-5" />} trend="up" />
           <MetricCard label="Interview Rate" value={`${metrics.interviewRate}%`} highlight icon={<MessageSquare className="w-5 h-5" />} trend="up" />
           <MetricCard label="Best Resume" value={metrics.bestResumeVersionLabel} sub="highest interview rate" icon={<FileText className="w-5 h-5" />} />
           <MetricCard label="Top Missing Skill" value={metrics.topMissingSkill} sub="in rejected applications" icon={<AlertCircle className="w-5 h-5" />} />
+          <MetricCard
+            label="Mock Avg Score"
+            value={typeof metrics.averageMockScore === 'number' ? `${Math.round(metrics.averageMockScore)}%` : 'N/A'}
+            sub={`${metrics.mockSessionsCount ?? 0} sessions`}
+            icon={<Brain className="w-5 h-5" />}
+            trend="flat"
+          />
         </div>
 
         {/* Charts */}

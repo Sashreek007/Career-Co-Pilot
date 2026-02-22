@@ -118,6 +118,7 @@ def init_db(db_path: str | Path | None = None) -> None:
     try:
         conn.executescript(SCHEMA_SQL)
         _ensure_jobs_columns(conn)
+        _ensure_resume_versions_columns(conn)
         _ensure_user_profile_columns(conn)
         _ensure_settings_columns(conn)
         conn.execute(
@@ -148,6 +149,21 @@ def _ensure_jobs_columns(conn) -> None:
         if column in existing:
             continue
         conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} {definition}")
+
+
+def _ensure_resume_versions_columns(conn) -> None:
+    existing = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(resume_versions)").fetchall()
+        if len(row) > 1
+    }
+    required_defs = [
+        ("template_id", "TEXT DEFAULT 'classic-serif'"),
+    ]
+    for column, definition in required_defs:
+        if column in existing:
+            continue
+        conn.execute(f"ALTER TABLE resume_versions ADD COLUMN {column} {definition}")
 
 
 def _ensure_user_profile_columns(conn) -> None:
