@@ -20,7 +20,6 @@ import {
   getBrowserAssistedDiscoveryProgress,
   getDiscoveryStatus,
   getProfile,
-  importExternalJob,
   postBrowserAssistedDiscoveryMessage,
   postChatMessage,
   prepareDraft,
@@ -87,13 +86,6 @@ interface AssistedReviewState {
 interface NoticeState {
   tone: 'info' | 'success' | 'error';
   message: string;
-}
-
-interface ImportFormState {
-  sourceUrl: string;
-  title: string;
-  company: string;
-  location: string;
 }
 
 interface AutoDiscoveryPlan {
@@ -164,8 +156,19 @@ function loadPersistedDiscoveryRunId(): string {
 
 export function JobFeedPage() {
   const navigate = useNavigate();
-  const { jobs, selectedJobId, isLoading, lastFetchedAt, fetchJobs, selectJob, markInterested } = useJobsStore();
+  const {
+    jobs,
+    selectedJobId,
+    isLoading,
+    lastFetchedAt,
+    fetchJobs,
+    selectJob,
+    markInterested,
+    removeJobs,
+    clearAllJobs,
+  } = useJobsStore();
   const didBootstrapFetchRef = useRef(false);
+  const [checkedJobIds, setCheckedJobIds] = useState<string[]>([]);
   const [locationFilter, setLocationFilter] = useState<LocationFilter>(() => loadPersistedLocationFilter());
   const [useVisibleBrowser, setUseVisibleBrowser] = useState(true);
   const [assistedReview, setAssistedReview] = useState<AssistedReviewState | null>(null);
@@ -182,7 +185,6 @@ export function JobFeedPage() {
   const noticeTimerRef = useRef<number | null>(null);
   const [notice, setNotice] = useState<NoticeState | null>(null);
   const [startApplyJobId, setStartApplyJobId] = useState<string | null>(null);
-  const [showImportModal, setShowImportModal] = useState(false);
   const [showDiscoveryModal, setShowDiscoveryModal] = useState(false);
   const [isPlanningDiscovery, setIsPlanningDiscovery] = useState(false);
   const [browserStatus, setBrowserStatus] = useState<BrowserConnectionStatus | null>(null);
@@ -206,12 +208,6 @@ export function JobFeedPage() {
   const [chatInput, setChatInput] = useState('');
   const [isSendingChat, setIsSendingChat] = useState(false);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
-  const [importForm, setImportForm] = useState<ImportFormState>({
-    sourceUrl: '',
-    title: '',
-    company: '',
-    location: 'Remote',
-  });
 
   const filteredJobs = useMemo(
     () => jobs.filter((job) => matchesLocationFilter(job, locationFilter)),
@@ -222,6 +218,12 @@ export function JobFeedPage() {
     () => (startApplyJobId ? jobs.find((job) => job.id === startApplyJobId) ?? null : null),
     [jobs, startApplyJobId]
   );
+  const visibleIdSet = useMemo(() => new Set(filteredJobs.map((job) => job.id)), [filteredJobs]);
+  const checkedVisibleCount = useMemo(
+    () => checkedJobIds.filter((id) => visibleIdSet.has(id)).length,
+    [checkedJobIds, visibleIdSet]
+  );
+  const allVisibleChecked = filteredJobs.length > 0 && checkedVisibleCount === filteredJobs.length;
 
   useEffect(() => {
     if (!didBootstrapFetchRef.current) {
@@ -246,6 +248,66 @@ export function JobFeedPage() {
       selectJob(filteredJobs[0].id);
     }
   }, [filteredJobs, selectedJobId, selectJob]);
+
+  useEffect(() => {
+    const currentIds = new Set(jobs.map((job) => job.id));
+    setCheckedJobIds((prev) => prev.filter((id) => currentIds.has(id)));
+  }, [jobs]);
+
+  const toggleJobChecked = (jobId: string, checked: boolean) => {
+    setCheckedJobIds((prev) => {
+      if (checked) {
+        if (prev.includes(jobId)) return prev;
+        return [...prev, jobId];
+      }
+      return prev.filter((id) => id !== jobId);
+    });
+  };
+
+  const toggleSelectAllVisible = (checked: boolean) => {
+    setCheckedJobIds((prev) => {
+      if (checked) {
+        const merged = new Set(prev);
+        for (const job of filteredJobs) merged.add(job.id);
+        return Array.from(merged);
+      }
+      const visible = new Set(filteredJobs.map((job) => job.id));
+      return prev.filter((id) => !visible.has(id));
+    });
+  };
+
+  const handleRemoveSelectedJobs = async () => {
+    const idsToRemove = checkedJobIds.filter((id) => visibleIdSet.has(id));
+    if (idsToRemove.length === 0) {
+      pushNotice('Select at least one job to remove.', 'info');
+      return;
+    }
+    if (!window.confirm(`Remove ${idsToRemove.length} selected job(s) from your feed?`)) {
+      return;
+    }
+    try {
+      await removeJobs(idsToRemove);
+      const removedSet = new Set(idsToRemove);
+      setCheckedJobIds((prev) => prev.filter((id) => !removedSet.has(id)));
+      pushNotice(`Removed ${idsToRemove.length} job(s) from your feed.`, 'success');
+    } catch (error) {
+      pushNotice(error instanceof Error ? error.message : 'Failed to remove selected jobs.', 'error');
+    }
+  };
+
+  const handleClearAllJobs = async () => {
+    if (jobs.length === 0) return;
+    if (!window.confirm('Clear all jobs from the feed? This cannot be undone.')) {
+      return;
+    }
+    try {
+      const archived = await clearAllJobs();
+      setCheckedJobIds([]);
+      pushNotice(`Cleared ${archived} job(s) from your feed.`, 'success');
+    } catch (error) {
+      pushNotice(error instanceof Error ? error.message : 'Failed to clear jobs.', 'error');
+    }
+  };
 
   const stopProgressPolling = () => {
     if (progressTimerRef.current !== null) {
@@ -587,31 +649,6 @@ export function JobFeedPage() {
     void runAssistedApplicationFlow(jobId);
   };
 
-  const handleImportExternalJob = async () => {
-    const sourceUrl = importForm.sourceUrl.trim();
-    if (!sourceUrl) {
-      pushNotice('Job URL is required.', 'error');
-      return;
-    }
-
-    const imported = await importExternalJob({
-      sourceUrl,
-      title: importForm.title.trim() || undefined,
-      company: importForm.company.trim() || undefined,
-      location: importForm.location.trim() || 'Remote',
-    });
-    if (imported.error || !imported.data) {
-      pushNotice(imported.error ?? 'Failed to import external job.', 'error');
-      return;
-    }
-
-    setShowImportModal(false);
-    setImportForm({ sourceUrl: '', title: '', company: '', location: 'Remote' });
-    await fetchJobs();
-    selectJob(imported.data.id);
-    pushNotice('External job imported. You can now run Assisted Apply on it.', 'success');
-  };
-
   const handleCheckBrowser = async () => {
     setIsCheckingBrowser(true);
     const result = await checkBrowserConnection();
@@ -769,13 +806,6 @@ export function JobFeedPage() {
               )}
               {isDiscovering ? 'View Search' : 'AI Auto Search'}
             </button>
-            <button
-              onClick={() => setShowImportModal(true)}
-              className="rounded-md bg-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-100 transition-colors hover:bg-zinc-600"
-              title="Manually add a job posting URL without scraping"
-            >
-              Import Job URL
-            </button>
           </div>
         </div>
       </div>
@@ -789,7 +819,44 @@ export function JobFeedPage() {
                 Loading jobs…
               </div>
             ) : (
-              <JobList jobs={filteredJobs} selectedJobId={selectedJobId} onSelect={selectJob} />
+              <div className="flex h-full flex-col">
+                <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2">
+                  <label className="inline-flex items-center gap-1.5 text-[11px] text-zinc-300">
+                    <input
+                      type="checkbox"
+                      checked={allVisibleChecked}
+                      onChange={(event) => toggleSelectAllVisible(event.target.checked)}
+                      disabled={filteredJobs.length === 0}
+                      className="h-3.5 w-3.5 rounded border-zinc-600 bg-zinc-800 text-blue-500"
+                    />
+                    Select all
+                  </label>
+                  <span className="text-[11px] text-zinc-500">{checkedVisibleCount} selected</span>
+                  <button
+                    onClick={() => void handleRemoveSelectedJobs()}
+                    disabled={checkedVisibleCount === 0}
+                    className="ml-auto rounded-md bg-zinc-800 px-2.5 py-1 text-[11px] font-medium text-zinc-200 hover:bg-zinc-700 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Remove Selected
+                  </button>
+                  <button
+                    onClick={() => void handleClearAllJobs()}
+                    disabled={jobs.length === 0}
+                    className="rounded-md bg-red-900/50 px-2.5 py-1 text-[11px] font-medium text-red-100 hover:bg-red-800/60 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Clear All
+                  </button>
+                </div>
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  <JobList
+                    jobs={filteredJobs}
+                    selectedJobId={selectedJobId}
+                    selectedIds={checkedJobIds}
+                    onSelect={selectJob}
+                    onToggleSelected={toggleJobChecked}
+                  />
+                </div>
+              </div>
             )
           }
           right={
@@ -1258,107 +1325,6 @@ export function JobFeedPage() {
                 className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
               >
                 {isDiscovering ? 'Searching…' : 'Run Auto Search'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showImportModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-black/70" onClick={() => setShowImportModal(false)} />
-          <div className="relative w-full max-w-xl rounded-xl border border-zinc-700 bg-zinc-900 shadow-2xl">
-            <div className="border-b border-zinc-800 px-5 py-4">
-              <h3 className="text-base font-semibold text-zinc-100">Import Job URL</h3>
-              <p className="mt-1 text-sm text-zinc-400">
-                Add a direct posting link without scraping. Title/company can be left blank.
-              </p>
-            </div>
-            <div className="space-y-3 px-5 py-4">
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                  Job URL
-                </span>
-                <input
-                  type="url"
-                  value={importForm.sourceUrl}
-                  onChange={(event) =>
-                    setImportForm((prev) => ({
-                      ...prev,
-                      sourceUrl: event.target.value,
-                    }))
-                  }
-                  placeholder="https://www.linkedin.com/jobs/view/..."
-                  className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100"
-                />
-              </label>
-              <div className="grid gap-3 md:grid-cols-2">
-                <label className="block">
-                  <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                    Job Title (optional)
-                  </span>
-                  <input
-                    type="text"
-                    value={importForm.title}
-                    onChange={(event) =>
-                      setImportForm((prev) => ({
-                        ...prev,
-                        title: event.target.value,
-                      }))
-                    }
-                    placeholder="Software Engineer"
-                    className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100"
-                  />
-                </label>
-                <label className="block">
-                  <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                    Company (optional)
-                  </span>
-                  <input
-                    type="text"
-                    value={importForm.company}
-                    onChange={(event) =>
-                      setImportForm((prev) => ({
-                        ...prev,
-                        company: event.target.value,
-                      }))
-                    }
-                    placeholder="Company name"
-                    className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100"
-                  />
-                </label>
-              </div>
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-zinc-500">
-                  Location
-                </span>
-                <input
-                  type="text"
-                  value={importForm.location}
-                  onChange={(event) =>
-                    setImportForm((prev) => ({
-                      ...prev,
-                      location: event.target.value,
-                    }))
-                  }
-                  placeholder="Remote"
-                  className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100"
-                />
-              </label>
-            </div>
-            <div className="flex items-center justify-end gap-2 border-t border-zinc-800 px-5 py-4">
-              <button
-                onClick={() => setShowImportModal(false)}
-                className="rounded-md bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-700"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => void handleImportExternalJob()}
-                disabled={!importForm.sourceUrl.trim()}
-                className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-70"
-              >
-                Import
               </button>
             </div>
           </div>

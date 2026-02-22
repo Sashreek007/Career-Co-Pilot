@@ -1,7 +1,7 @@
 export type { ApiResponse } from './types';
 export { delay, MOCK_DELAY_MS } from './types';
 
-export { getJobs, getJob, markJobInterested, importExternalJob } from './jobs';
+export { getJobs, getJob, markJobInterested, archiveJob, archiveAllJobs, importExternalJob } from './jobs';
 export { getResumeVersions, getResumeVersion, exportResumeAsLatex, exportResumeAsPdf, generateAllVersions, updateResumeContent } from './resumes';
 export type { ResumePdfExportResult, GenerateAllResult, GeneratedVersionSummary } from './resumes';
 export { getApplicationDrafts, getApplicationDraft, updateDraftStatus } from './applications';
