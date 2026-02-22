@@ -170,6 +170,24 @@ def compute_metrics(db_conn) -> dict[str, Any]:
 
     top_missing_skill = missing_counter.most_common(1)[0][0] if missing_counter else 'N/A'
 
+    cursor.execute("SELECT mock_scores_json FROM interview_kits")
+    mock_sessions_count = 0
+    mock_score_total = 0.0
+    for (raw_mock_scores,) in cursor.fetchall():
+        for item in _parse_json_array(raw_mock_scores):
+            if not isinstance(item, dict):
+                continue
+            final = item.get('finalScore')
+            try:
+                final_num = float(final)
+            except (TypeError, ValueError):
+                continue
+            if final_num < 0:
+                continue
+            mock_sessions_count += 1
+            mock_score_total += final_num
+    average_mock_score = round((mock_score_total / mock_sessions_count), 2) if mock_sessions_count else 0.0
+
     return {
         'totalApplications': total_applications,
         'responseRate': response_rate,
@@ -182,4 +200,6 @@ def compute_metrics(db_conn) -> dict[str, Any]:
         'interviewRateOverTime': interview_rate_over_time,
         'matchDistribution': match_distribution,
         'windowDays': window_days,
+        'mockSessionsCount': mock_sessions_count,
+        'averageMockScore': average_mock_score,
     }

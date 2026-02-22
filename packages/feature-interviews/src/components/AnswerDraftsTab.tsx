@@ -21,11 +21,12 @@ export function AnswerDraftsTab({ kit }: { kit: InterviewKit }) {
     <div className="px-6 py-5 space-y-5">
       {kit.answerDrafts.map((draft) => {
         const question = kit.questions.find((q) => q.id === draft.questionId);
+        const questionText = question?.question ?? question?.text ?? '[REQUIRES_REVIEW: missing question text]';
         return (
           <div key={draft.questionId} className="bg-zinc-900 border border-zinc-800 rounded-lg p-5">
             {question && (
               <p className="text-sm font-medium text-zinc-300 mb-4 pb-3 border-b border-zinc-800">
-                {question.text}
+                {questionText}
               </p>
             )}
             <div className="space-y-3">

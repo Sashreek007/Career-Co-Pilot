@@ -1,5 +1,7 @@
 import json
 import sqlite3
+import asyncio
+import logging
 from typing import Any
 from uuid import uuid4
 
@@ -7,8 +9,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from ..db.database import get_db
+from ..engines.feedback.cache_refresher import refresh_insights_cache
 
 router = APIRouter(prefix="", tags=["applications"])
+logger = logging.getLogger(__name__)
 
 ALLOWED_STATUSES = {
     "drafted",
@@ -34,6 +38,16 @@ def db_conn():
     conn = get_db()
     try:
         yield conn
+    finally:
+        conn.close()
+
+
+def _refresh_insights_snapshot() -> None:
+    conn = get_db()
+    try:
+        asyncio.run(refresh_insights_cache(conn))
+    except Exception:
+        logger.exception("Failed to refresh insights cache after application update")
     finally:
         conn.close()
 
@@ -130,4 +144,5 @@ def update_application_status(
     db.commit()
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail="Application draft not found")
+    _refresh_insights_snapshot()
     return get_application(draft_id, db)

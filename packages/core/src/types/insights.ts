@@ -26,4 +26,6 @@ export interface InsightsMetrics {
   interviewRateOverTime: InterviewRateDataPoint[];
   matchDistribution: MatchDistributionDataPoint[];
   windowDays: number;
+  mockSessionsCount?: number;
+  averageMockScore?: number;
 }

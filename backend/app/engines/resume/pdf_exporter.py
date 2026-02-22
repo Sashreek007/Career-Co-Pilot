@@ -779,11 +779,9 @@ def _render_jakes_template(payload: dict[str, Any]) -> str:
         section for section in [education, experience, projects, skills, certifications] if section
     )
     return rf"""
-\documentclass[letterpaper,11pt]{{article}}
+\documentclass[a4paper,11pt]{{article}}
 \usepackage{{latexsym}}
-% Use a very tall paper so content never wraps to a second page,
-% then shrink the PDF page height to exactly fit the content at end of doc.
-\usepackage[margin=0.5in,top=0.5in,bottom=0.5in,paperheight=50in]{{geometry}}
+\usepackage[a4paper,margin=0.5in,top=0.5in,bottom=0.5in]{{geometry}}
 \usepackage{{titlesec}}
 \usepackage{{marvosym}}
 \usepackage[usenames,dvipsnames]{{color}}
@@ -809,10 +807,6 @@ def _render_jakes_template(payload: dict[str, Any]) -> str:
 
 \titleformat{{\section}}{{\vspace{{-4pt}}\scshape\raggedright\large}}{{}}{{0em}}{{}}[\color{{black}}\titlerule \vspace{{-5pt}}]
 \ifxetex\else\pdfgentounicode=1\fi
-
-% Shrink-wrap: resize the PDF page to exactly fit the content height.
-% \pdfpageheight works in both pdfLaTeX and XeLaTeX.
-\AtEndDocument{{\pdfpageheight=\dimexpr\pagetotal+1in\relax}}
 
 \newcommand{{\resumeItem}}[1]{{\item\small{{{{#1 \vspace{{-2pt}}}}}}}}
 \newcommand{{\resumeSubheading}}[4]{{

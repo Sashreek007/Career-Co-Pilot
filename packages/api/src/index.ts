@@ -47,7 +47,7 @@ export type {
   BrowserConnectionStatus,
   DiscoveryStatusResult,
 } from './discovery';
-export { getInterviewKit, getInterviewKits } from './interviews';
+export { getInterviewKit, getInterviewKits, scoreMockAnswer } from './interviews';
 export {
   getProfiles,
   createProfile,
@@ -59,7 +59,7 @@ export {
   recommendProfileRoles,
 } from './profile';
 export type { ProfileSummary, ResumeUploadResult, ResumeUploadExtraction, RoleRecommendationResult } from './profile';
-export { getInsights } from './insights';
+export { getInsights, refreshInsights } from './insights';
 export { getSettings, updateSettings } from './settings';
 export type { AppSettings } from './settings';
 

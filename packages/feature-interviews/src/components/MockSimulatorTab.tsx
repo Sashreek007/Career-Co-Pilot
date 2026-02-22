@@ -1,27 +1,56 @@
 import { useState } from 'react';
-import type { InterviewKit } from '@career-copilot/core';
+import type { InterviewKit, MockScore } from '@career-copilot/core';
+import { scoreMockAnswer } from '@career-copilot/api';
 import { useInterviewsStore } from '../state/useInterviewsStore';
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, Loader2 } from 'lucide-react';
 
 export function MockSimulatorTab({ kit }: { kit: InterviewKit }) {
-  const { currentQuestionIndex, advanceQuestion } = useInterviewsStore();
+  const { currentQuestionIndex, advanceQuestion, saveMockScore } = useInterviewsStore();
   const [answer, setAnswer] = useState('');
   const [submitted, setSubmitted] = useState(false);
+  const [isScoring, setIsScoring] = useState(false);
+  const [feedbackError, setFeedbackError] = useState('');
+  const [usedAi, setUsedAi] = useState(false);
+  const [currentScore, setCurrentScore] = useState<MockScore | null>(null);
 
   const question = kit.questions[currentQuestionIndex];
-
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!answer.trim()) return;
-    setSubmitted(true);
+    setFeedbackError('');
+    setIsScoring(true);
+    try {
+      const response = await scoreMockAnswer(kit.id, {
+        questionId: question?.id ?? `q-${currentQuestionIndex + 1}`,
+        question: question?.question ?? question?.text ?? '[REQUIRES_REVIEW: missing question text]',
+        answer: answer.trim(),
+        category: question?.category ?? 'behavioral',
+        difficulty: question?.difficulty ?? 'medium',
+      });
+      saveMockScore(response.data.score);
+      setCurrentScore(response.data.score);
+      setUsedAi(response.data.usedAi);
+      setSubmitted(true);
+    } catch {
+      setFeedbackError('Unable to score right now. Please check backend connectivity and API key in Settings.');
+      setCurrentScore(null);
+      setSubmitted(true);
+    } finally {
+      setIsScoring(false);
+    }
   };
 
   const handleNext = () => {
     advanceQuestion();
     setAnswer('');
     setSubmitted(false);
+    setFeedbackError('');
+    setUsedAi(false);
+    setCurrentScore(null);
   };
 
   if (!question) return null;
+  const questionText = question.question ?? question.text ?? '[REQUIRES_REVIEW: missing question text]';
+  const questionDifficulty = question.difficulty ?? 'medium';
 
   const progressPercent = ((currentQuestionIndex + 1) / kit.questions.length) * 100;
 
@@ -40,11 +69,11 @@ export function MockSimulatorTab({ kit }: { kit: InterviewKit }) {
         <span className="text-zinc-700">·</span>
         <span className="capitalize">{question.category.replace('_', ' ')}</span>
         <span className="text-zinc-700">·</span>
-        <span className="capitalize">{question.difficulty}</span>
+        <span className="capitalize">{questionDifficulty}</span>
       </div>
 
       <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 mb-4">
-        <p className="text-base text-zinc-100 leading-relaxed">{question.text}</p>
+        <p className="text-base text-zinc-100 leading-relaxed">{questionText}</p>
         {question.contextNotes && (
           <p className="text-xs text-zinc-500 mt-2">{question.contextNotes}</p>
         )}
@@ -61,10 +90,24 @@ export function MockSimulatorTab({ kit }: { kit: InterviewKit }) {
           />
           <button
             onClick={handleSubmit}
-            disabled={!answer.trim()}
+            disabled={!answer.trim() || isScoring}
             className="mt-3 px-4 py-2 rounded-md bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
           >
-            Submit Answer
+            {isScoring ? (
+              <span className="inline-flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Scoring...
+              </span>
+            ) : (
+              'Submit Answer'
+            )}
+          </button>
+          <button
+            onClick={handleNext}
+            disabled={isScoring}
+            className="mt-3 ml-2 px-4 py-2 rounded-md bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed text-zinc-200 text-sm font-medium transition-colors"
+          >
+            Skip to Next
           </button>
         </>
       ) : (
@@ -76,17 +119,47 @@ export function MockSimulatorTab({ kit }: { kit: InterviewKit }) {
 
           <div className="bg-zinc-900 border border-blue-500/20 rounded-xl p-5">
             <p className="text-xs font-semibold text-blue-400 uppercase tracking-wider mb-3">Feedback</p>
-            <p className="text-sm text-zinc-400">
-              AI scoring coming soon — connect Gemini API key in Settings to enable automatic scoring.
-            </p>
+            {feedbackError ? (
+              <p className="text-sm text-red-300">{feedbackError}</p>
+            ) : (
+              <p className="text-sm text-zinc-400">
+                {usedAi ? 'AI scoring enabled via Gemini.' : 'Scored with fallback rubric (Gemini unavailable).'}
+              </p>
+            )}
             <div className="mt-3 grid grid-cols-5 gap-2">
-              {['Structure', 'Relevance', 'Depth', 'Specificity', 'Clarity'].map((dim) => (
-                <div key={dim} className="text-center">
-                  <div className="text-xs text-zinc-500 mb-1">{dim}</div>
-                  <div className="text-sm font-semibold text-zinc-600">—</div>
-                </div>
-              ))}
+              <div className="text-center">
+                <div className="text-xs text-zinc-500 mb-1">Structure</div>
+                <div className="text-sm font-semibold text-zinc-200">{currentScore?.structureScore ?? '—'}</div>
+              </div>
+              <div className="text-center">
+                <div className="text-xs text-zinc-500 mb-1">Relevance</div>
+                <div className="text-sm font-semibold text-zinc-200">{currentScore?.relevanceScore ?? '—'}</div>
+              </div>
+              <div className="text-center">
+                <div className="text-xs text-zinc-500 mb-1">Depth</div>
+                <div className="text-sm font-semibold text-zinc-200">{currentScore?.technicalDepth ?? '—'}</div>
+              </div>
+              <div className="text-center">
+                <div className="text-xs text-zinc-500 mb-1">Specificity</div>
+                <div className="text-sm font-semibold text-zinc-200">{currentScore?.specificity ?? '—'}</div>
+              </div>
+              <div className="text-center">
+                <div className="text-xs text-zinc-500 mb-1">Clarity</div>
+                <div className="text-sm font-semibold text-zinc-200">{currentScore?.clarity ?? '—'}</div>
+              </div>
             </div>
+            {typeof currentScore?.finalScore === 'number' && (
+              <p className="mt-3 text-sm text-blue-300">Overall: {currentScore.finalScore}%</p>
+            )}
+            {currentScore?.suggestions?.length ? (
+              <ul className="mt-3 space-y-1">
+                {currentScore.suggestions.map((suggestion, idx) => (
+                  <li key={`${currentScore.sessionId}-${idx}`} className="text-xs text-zinc-300">
+                    • {suggestion}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </div>
 
           <button

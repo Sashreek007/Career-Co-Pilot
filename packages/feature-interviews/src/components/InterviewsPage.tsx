@@ -17,7 +17,7 @@ const TABS: { id: Tab; label: string }[] = [
 
 export function InterviewsPage() {
   const [activeTab, setActiveTab] = useState<Tab>('questions');
-  const { kits, selectedKitId, isLoading, fetchKits } = useInterviewsStore();
+  const { kits, selectedKitId, isLoading, fetchKits, selectKit } = useInterviewsStore();
   const kit = kits.find((k) => k.id === selectedKitId);
 
   useEffect(() => { fetchKits(); }, [fetchKits]);
@@ -29,6 +29,24 @@ export function InterviewsPage() {
           title="Interview Prep"
           description={kit ? `${kit.company} — ${kit.jobTitle}` : 'Loading…'}
         />
+        {kits.length > 1 && (
+          <div className="mt-4 max-w-md">
+            <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">
+              Select Company
+            </label>
+            <select
+              value={selectedKitId ?? ''}
+              onChange={(e) => selectKit(e.target.value)}
+              className="w-full bg-zinc-900 border border-zinc-800 rounded-md px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              {kits.map((candidate) => (
+                <option key={candidate.id} value={candidate.id}>
+                  {candidate.company} — {candidate.jobTitle}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
         {/* Tabs */}
         <div className="flex gap-0 mt-5 border-b border-zinc-800">
           {TABS.map((tab) => (

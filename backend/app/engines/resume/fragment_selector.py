@@ -162,10 +162,16 @@ def select_fragments(
     fragment dicts augmented with ``selection_reason`` and ``score``.
     """
     required_skills: list[str] = _normalise_skill_names(jd_analysis.get("required_skills", []))
+    experience_entries = user_profile.get("experience_json")
+    if not isinstance(experience_entries, list):
+        experience_entries = []
+    project_entries = user_profile.get("projects_json")
+    if not isinstance(project_entries, list):
+        project_entries = []
 
     # ── Score & select experience bullets ──────────────────────────────
     scored_experience: list[dict[str, Any]] = []
-    for entry in user_profile.get("experience_json", []):
+    for entry in experience_entries:
         if not isinstance(entry, dict):
             continue
 
@@ -204,7 +210,7 @@ def select_fragments(
 
     # ── Score & select projects ────────────────────────────────────────
     scored_projects: list[dict[str, Any]] = []
-    for project in user_profile.get("projects_json", []):
+    for project in project_entries:
         if not isinstance(project, dict):
             continue
         proj_skills = _normalise_skill_names(project.get("skills", []))

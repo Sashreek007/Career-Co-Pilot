@@ -13,7 +13,11 @@ export const useInsightsStore = create<InsightsStore>((set) => ({
   isLoading: false,
   fetchInsights: async () => {
     set({ isLoading: true });
-    const res = await getInsights();
-    set({ metrics: res.data, isLoading: false });
+    try {
+      const res = await getInsights();
+      set({ metrics: res.data, isLoading: false });
+    } catch {
+      set({ isLoading: false });
+    }
   },
 }));

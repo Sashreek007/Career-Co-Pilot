@@ -4,6 +4,9 @@ export type { ApplicationDraft, ApplicationStatus, FormField } from './types/app
 export type {
   InterviewKit,
   InterviewQuestion,
+  CompanyProfile,
+  QuestionBank,
+  StarGuidance,
   AnswerDraft,
   MockScore,
   InterviewType,
