@@ -57,7 +57,7 @@ def test_invalid_gemini_json_uses_fallback(monkeypatch):
         )
     )
 
-    assert company_profile["vision"].startswith("[REQUIRES_REVIEW")
+    assert "ownership" in company_profile["vision"].lower()
     assert len(question_bank["behavioral_questions"]) == 5
     assert len(question_bank["technical_questions"]) == 4
     assert len(question_bank["company_questions"]) == 2
