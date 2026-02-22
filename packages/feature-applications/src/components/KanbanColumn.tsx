@@ -33,7 +33,7 @@ export function KanbanColumn({ status, label, drafts, onCardClick }: KanbanColum
     <div
       ref={setNodeRef}
       className={cn(
-        'flex flex-col min-w-[220px] w-[220px] rounded-lg border bg-zinc-900/50',
+        'flex flex-col min-w-[240px] w-full rounded-lg border bg-zinc-900/50',
         columnColors[status] ?? 'border-zinc-800',
         isOver && 'ring-1 ring-blue-500/50 bg-zinc-800/50'
       )}

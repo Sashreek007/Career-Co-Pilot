@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS user_profile (
     experience_json TEXT,
     projects_json TEXT,
     certifications_json TEXT,
+    education_json TEXT,
     role_interests_json TEXT,
     resume_file_name TEXT,
     resume_file_path TEXT,
@@ -59,6 +60,7 @@ CREATE TABLE IF NOT EXISTS application_drafts (
     id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL REFERENCES jobs(id),
     resume_version_id TEXT REFERENCES resume_versions(id),
+    profile_id TEXT REFERENCES user_profile(id) DEFAULT 'local',
     status TEXT DEFAULT 'drafted',
     form_structure_json TEXT,
     filled_answers_json TEXT,
@@ -120,6 +122,7 @@ def init_db(db_path: str | Path | None = None) -> None:
         _ensure_jobs_columns(conn)
         _ensure_resume_versions_columns(conn)
         _ensure_user_profile_columns(conn)
+        _ensure_application_drafts_columns(conn)
         _ensure_settings_columns(conn)
         conn.execute(
             """
@@ -179,6 +182,7 @@ def _ensure_user_profile_columns(conn) -> None:
         ("resume_uploaded_at", "TEXT"),
         ("resume_text", "TEXT"),
         ("resume_parsed_json", "TEXT"),
+        ("education_json", "TEXT"),
     ]
     for column, definition in required_defs:
         if column in existing:
@@ -205,5 +209,30 @@ def _ensure_settings_columns(conn) -> None:
         UPDATE settings
         SET active_profile_id = COALESCE(NULLIF(TRIM(active_profile_id), ''), 'local')
         WHERE id = 1
+        """
+    )
+
+
+def _ensure_application_drafts_columns(conn) -> None:
+    existing = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(application_drafts)").fetchall()
+        if len(row) > 1
+    }
+    # SQLite cannot ADD COLUMN with both REFERENCES and non-NULL/default constraints
+    # in many existing-table migration paths. Keep migration compatible by adding a
+    # plain TEXT column, then backfill with 'local'.
+    required_defs = [
+        ("profile_id", "TEXT DEFAULT 'local'"),
+    ]
+    for column, definition in required_defs:
+        if column in existing:
+            continue
+        conn.execute(f"ALTER TABLE application_drafts ADD COLUMN {column} {definition}")
+
+    conn.execute(
+        """
+        UPDATE application_drafts
+        SET profile_id = COALESCE(NULLIF(TRIM(profile_id), ''), 'local')
         """
     )

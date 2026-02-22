@@ -47,10 +47,31 @@ export const useResumeStore = create<ResumeStore>((set) => ({
   setCompareId: (id) => set({ compareId: id }),
 
   generateForJob: async (jobId: string) => {
+    const startedAt = Date.now();
     set({ generationStatus: 'generating', generationError: null, activeJobId: jobId });
     try {
       const res = await generateAllVersions(jobId);
       if (!res.data || res.data.versions.length === 0) {
+        // Backend can still finish after proxy timeout (504). Recover by polling resumes briefly.
+        if (res.status === 504) {
+          for (let attempt = 0; attempt < 5; attempt += 1) {
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            const allRes = await getResumeVersions();
+            const maybeGenerated = allRes.data
+              .filter((v) => v.jobId === jobId)
+              .sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt))
+              .find((v) => +new Date(v.createdAt) >= startedAt - 2000);
+            if (maybeGenerated) {
+              set({
+                versions: allRes.data,
+                selectedId: maybeGenerated.id,
+                generationStatus: 'done',
+                generationError: null,
+              });
+              return;
+            }
+          }
+        }
         set({ generationStatus: 'error', generationError: res.error ?? 'Generation failed' });
         return;
       }

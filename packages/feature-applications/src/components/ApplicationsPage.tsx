@@ -8,7 +8,6 @@ import { ApplicationDetailModal } from './ApplicationDetailModal';
 
 const COLUMNS: { status: ApplicationStatus; label: string }[] = [
   { status: 'drafted', label: 'Drafted' },
-  { status: 'approved', label: 'Approved' },
   { status: 'submitted', label: 'Submitted' },
   { status: 'interview', label: 'Interview' },
   { status: 'offer', label: 'Offer' },
@@ -50,6 +49,13 @@ export function ApplicationsPage() {
     setSelectedDraft(null);
   };
 
+  const draftsForColumn = (status: ApplicationStatus) =>
+    drafts.filter((d) => {
+      // "Approved" was removed from the board; show those cards in Submitted.
+      if (status === 'submitted') return d.status === 'submitted' || d.status === 'approved';
+      return d.status === status;
+    });
+
   return (
     <div className="h-full flex flex-col">
       <div className="px-6 pt-6 pb-4">
@@ -64,13 +70,16 @@ export function ApplicationsPage() {
       ) : (
         <div className="flex-1 overflow-x-auto px-6 pb-6">
           <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
-            <div className="flex gap-3 h-full min-w-max">
+            <div
+              className="grid gap-3 h-full w-full"
+              style={{ gridTemplateColumns: `repeat(${COLUMNS.length}, minmax(240px, 1fr))` }}
+            >
               {COLUMNS.map(({ status, label }) => (
                 <KanbanColumn
                   key={status}
                   status={status}
                   label={label}
-                  drafts={drafts.filter((d) => d.status === status)}
+                  drafts={draftsForColumn(status)}
                   onCardClick={setSelectedDraft}
                 />
               ))}

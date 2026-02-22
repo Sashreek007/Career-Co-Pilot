@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from ..db.database import get_db
 from ..engines.applications.draft_generator import generate_draft_answers
 from ..engines.applications.form_analyzer import analyze_form
+from ..engines.resume.pdf_exporter import ResumePdfExportError, export_resume_pdf
 from ..engines.applications.submission_engine import (
     BrowserUnavailableError,
     RateLimitError,
@@ -49,6 +50,12 @@ class AssistedFinalSubmitRequest(BaseModel):
     acknowledge_platform_terms: bool = False
     confirm_final_submit: bool = False
     use_visible_browser: bool = False
+
+
+class AssistedManualSubmitRequest(BaseModel):
+    confirm_user_assisted: bool = False
+    acknowledge_platform_terms: bool = False
+    confirm_final_submit: bool = False
 
 
 class AssistedGuidanceRequest(BaseModel):
@@ -98,6 +105,78 @@ def _get_draft_or_404(draft_id: str, db: sqlite3.Connection) -> dict[str, Any]:
     return _row_to_draft(row)
 
 
+def _get_active_profile_id(db: sqlite3.Connection) -> str:
+    try:
+        row = db.execute("SELECT active_profile_id FROM settings WHERE id = 1").fetchone()
+        active = str(row[0] or "").strip() if row is not None else ""
+    except sqlite3.Error:
+        active = ""
+    return active or "local"
+
+
+def _select_resume_version_for_job(
+    db: sqlite3.Connection,
+    *,
+    job_id: str,
+    profile_id: str,
+    preferred_resume_id: str | None,
+) -> str | None:
+    if preferred_resume_id:
+        return preferred_resume_id
+
+    rows = db.execute(
+        """
+        SELECT id, content_json
+        FROM resume_versions
+        WHERE job_id = ?
+        ORDER BY created_at DESC
+        """,
+        (job_id,),
+    ).fetchall()
+    if not rows:
+        return None
+
+    fallback_id: str | None = None
+    for row in rows:
+        resume_id = str(row["id"] if isinstance(row, sqlite3.Row) else row[0])
+        if not fallback_id:
+            fallback_id = resume_id
+        raw_content = row["content_json"] if isinstance(row, sqlite3.Row) else row[1]
+        if not isinstance(raw_content, str) or not raw_content.strip():
+            continue
+        try:
+            parsed = json.loads(raw_content)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            embedded_profile_id = str(parsed.get("profile_id") or "").strip()
+            if embedded_profile_id and embedded_profile_id == profile_id:
+                return resume_id
+    return fallback_id
+
+
+def _resume_upload_override_from_version(
+    db: sqlite3.Connection,
+    resume_version_id: str | None,
+) -> dict[str, str] | None:
+    if not resume_version_id:
+        return None
+    try:
+        export = export_resume_pdf(resume_version_id, db)
+    except (ValueError, ResumePdfExportError):
+        return None
+    resume_path = str(export.get("pdf_path") or "").strip()
+    file_name = str(export.get("filename") or "").strip()
+    if not resume_path:
+        return None
+    if not Path(resume_path).exists():
+        return None
+    return {
+        "resume_file_path": resume_path,
+        "resume_file_name": file_name or Path(resume_path).name,
+    }
+
+
 @router.post("/prepare")
 async def prepare_draft(payload: PrepareDraftRequest, db: sqlite3.Connection = Depends(db_conn)):
     job = db.execute(
@@ -107,12 +186,22 @@ async def prepare_draft(payload: PrepareDraftRequest, db: sqlite3.Connection = D
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    profile = db.execute("SELECT * FROM user_profile WHERE id = 'local'").fetchone()
+    active_profile_id = _get_active_profile_id(db)
+    profile = db.execute("SELECT * FROM user_profile WHERE id = ?", (active_profile_id,)).fetchone()
+    if profile is None and active_profile_id != "local":
+        profile = db.execute("SELECT * FROM user_profile WHERE id = 'local'").fetchone()
     if profile is None:
         raise HTTPException(status_code=404, detail="Profile not found")
 
-    if payload.resume_version_id:
-        resume = db.execute("SELECT id FROM resume_versions WHERE id = ?", (payload.resume_version_id,)).fetchone()
+    selected_resume_version_id = _select_resume_version_for_job(
+        db,
+        job_id=payload.job_id,
+        profile_id=str(dict(profile).get("id") or active_profile_id or "local"),
+        preferred_resume_id=payload.resume_version_id,
+    )
+
+    if selected_resume_version_id:
+        resume = db.execute("SELECT id FROM resume_versions WHERE id = ?", (selected_resume_version_id,)).fetchone()
         if resume is None:
             raise HTTPException(status_code=404, detail="Resume version not found")
 
@@ -120,7 +209,13 @@ async def prepare_draft(payload: PrepareDraftRequest, db: sqlite3.Connection = D
     profile_dict = dict(profile)
 
     form_fields = await analyze_form(str(job_dict.get("source_url") or ""))
-    filled_answers = generate_draft_answers(job_dict, profile_dict, form_fields)
+    resume_upload_override = _resume_upload_override_from_version(db, selected_resume_version_id)
+    filled_answers = generate_draft_answers(
+        job_dict,
+        profile_dict,
+        form_fields,
+        resume_upload_override=resume_upload_override,
+    )
 
     draft_id = f"app-{uuid4().hex[:8]}"
     db.execute(
@@ -129,17 +224,19 @@ async def prepare_draft(payload: PrepareDraftRequest, db: sqlite3.Connection = D
             id,
             job_id,
             resume_version_id,
+            profile_id,
             status,
             form_structure_json,
             filled_answers_json,
             created_at
         )
-        VALUES (?, ?, ?, 'drafted', ?, ?, ?)
+        VALUES (?, ?, ?, ?, 'drafted', ?, ?, ?)
         """,
         (
             draft_id,
             payload.job_id,
-            payload.resume_version_id,
+            selected_resume_version_id,
+            str(profile_dict.get("id") or active_profile_id or "local"),
             json.dumps(form_fields),
             json.dumps(filled_answers),
             datetime.utcnow().isoformat(),
@@ -269,6 +366,42 @@ async def confirm_submit_draft(
         "screenshot_path": screenshot_path,
         "screenshot_url": _artifact_url_for_screenshot_path(screenshot_path),
         "mode": result.get("mode"),
+        "draft": draft,
+    }
+
+
+@router.post("/{draft_id}/mark-submitted")
+def mark_submitted_manually(
+    draft_id: str,
+    payload: AssistedManualSubmitRequest,
+    db: sqlite3.Connection = Depends(db_conn),
+):
+    _assert_assisted_consent(payload.confirm_user_assisted, payload.acknowledge_platform_terms)
+    if not payload.confirm_final_submit:
+        raise HTTPException(status_code=400, detail="Final submit confirmation is required")
+
+    _get_draft_or_404(draft_id, db)
+    submitted_at = datetime.utcnow().isoformat()
+    db.execute(
+        """
+        UPDATE application_drafts
+        SET status = 'submitted', submitted_at = ?
+        WHERE id = ?
+        """,
+        (submitted_at, draft_id),
+    )
+    run_id = f"submission-{uuid4().hex[:10]}"
+    db.execute(
+        """
+        INSERT INTO discovery_runs (id, started_at, completed_at, jobs_found, jobs_new, source, status)
+        VALUES (?, ?, ?, 0, 0, 'submission_engine', 'submitted_manual')
+        """,
+        (run_id, submitted_at, submitted_at),
+    )
+    db.commit()
+    draft = _get_draft_or_404(draft_id, db)
+    return {
+        "status": "submitted_manual",
         "draft": draft,
     }
 

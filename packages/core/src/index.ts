@@ -19,6 +19,7 @@ export type {
   Project,
   Experience,
   Certification,
+  Education,
   RoleInterest,
   SkillLevel,
 } from './types/profile';

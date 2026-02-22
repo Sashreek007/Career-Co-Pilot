@@ -10,6 +10,7 @@ export {
   approveDraft,
   runAssistedFill,
   runAssistedConfirmSubmit,
+  markAssistedSubmitted,
   getAssistedProgress,
   sendAssistedGuidance,
   getChatMessages,
@@ -23,6 +24,8 @@ export type {
   ChatMessage,
   ChatThreadResult,
   PostChatMessageResult,
+  AssistedManualSubmittedResult,
+  AssistedScreenshotSnapshot,
 } from './drafts';
 export {
   runBrowserAssistedDiscovery,

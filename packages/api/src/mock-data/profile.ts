@@ -87,6 +87,19 @@ export const MOCK_PROFILE: UserProfile = {
       ],
     },
   ],
+  education: [
+    {
+      id: 'edu-1',
+      institution: 'University of California, Berkeley',
+      degree: 'B.S.',
+      field: 'Electrical Engineering and Computer Sciences',
+      startDate: '2022-08',
+      endDate: '2026-05',
+      current: true,
+      gpa: '3.8',
+      location: 'Berkeley, CA',
+    },
+  ],
   certifications: [
     {
       id: 'cert-1',
